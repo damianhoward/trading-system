@@ -6,8 +6,18 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     ignore:
-      # Pinned to 2.3.x until CodeQL's Kotlin extractor supports 2.4+
+      # Inherited from the shared platform, not declared here. CodeQL no longer caps it
+      # (github/codeql#21938 closed 2026-07-08), but CVE-2026-53914 is fixed in Kotlin 2.4.20,
+      # which has no GA release, and ktlint 1.5.0 cannot run under 2.4.10. Bumped in
+      # build-conventions when both land.
       - dependency-name: "org.jetbrains.kotlin.jvm"
+      # settings.gradle maps this plugin id to com.github.damian1000.build-conventions:plugins
+      # through an eachPlugin resolutionStrategy. Dependabot does not run that mapping, so it
+      # asks JitPack for the plugin-marker coordinate io/github/damian1000/... which does not
+      # exist there; JitPack answers 401 for an unknown group and Dependabot reports
+      # private_source_authentication_failure. No credential fixes a coordinate that is not
+      # published — platform bumps are a deliberate estate-wide sweep.
+      - dependency-name: "io.github.damian1000.kotlin-conventions"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

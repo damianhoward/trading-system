@@ -1,0 +1,14 @@
+name: Dependency check
+
+# Weekly OWASP dependency-check against the shared reusable workflow. Not part of CI: the scan
+# reports advisories published since the last build rather than anything about a diff, which
+# dep-review already gates. Monday 06:00 UTC so a new advisory surfaces before the week's work.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    uses: damian1000/.github/.github/workflows/dependency-check.yml@main
+    secrets: inherit
