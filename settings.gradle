@@ -13,10 +13,6 @@ pluginManagement {
     }
 }
 
-plugins {
-    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
-}
-
 // The shared version catalog: versions two or more repos genuinely share (see the
 // version-catalog repo); application-specific dependencies stay in build.gradle.
 dependencyResolutionManagement {
@@ -25,7 +21,7 @@ dependencyResolutionManagement {
     }
     versionCatalogs {
         create('deps') {
-            from 'com.github.damian1000.build-conventions:catalog:0.4.3'
+            from 'com.github.damian1000.build-conventions:catalog:0.4.4'
         }
     }
 }
