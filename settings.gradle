@@ -21,7 +21,7 @@ dependencyResolutionManagement {
     }
     versionCatalogs {
         create('deps') {
-            from 'com.github.damian1000.build-conventions:catalog:0.4.5'
+            from 'com.github.damian1000.build-conventions:catalog:0.4.6'
         }
     }
 }
