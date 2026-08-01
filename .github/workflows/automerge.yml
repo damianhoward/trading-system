@@ -1,0 +1,21 @@
+name: Auto-merge
+
+# Replaces dependabot-automerge.yml. Two changes: it covers this repository's own pull
+# requests rather than only Dependabot's, and it merges with AUTOMERGE_TOKEN instead of
+# GITHUB_TOKEN. GitHub raises no workflow runs for events triggered by GITHUB_TOKEN, so the
+# previous workflow's merges landed on main without CI ever running against it.
+#
+# pull_request_target rather than pull_request: a pull_request run raised by Dependabot is
+# given Dependabot's secret scope instead of this repository's Actions secrets, so the token
+# would arrive empty.
+on:
+  pull_request_target:
+    branches: [main]
+
+# The merge itself is performed with AUTOMERGE_TOKEN, so GITHUB_TOKEN needs nothing.
+permissions: {}
+
+jobs:
+  auto-merge:
+    uses: damian1000/.github/.github/workflows/automerge.yml@main
+    secrets: inherit

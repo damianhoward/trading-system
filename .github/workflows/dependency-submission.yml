@@ -1,0 +1,25 @@
+name: Dependency submission
+
+# Submits the resolved Gradle dependency graph. Without it GitHub sees no JVM dependency in
+# this repository at all — its automatic detection does not resolve a Gradle build — which
+# leaves Dependabot security alerts with nothing to match against the advisory database and
+# dep-review.yml comparing two graphs that contain no Maven coordinates on either side.
+#
+# On pull requests as well as pushes: the review compares the base graph with the head graph,
+# so a snapshot is needed on both sides. workflow_dispatch is there to re-submit after a change
+# to the shared workflow, without waiting for the next push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Submitting a snapshot writes to the repository. The default token grant is read-only, and a
+# reusable workflow cannot request more than its caller was given.
+permissions:
+  contents: write
+
+jobs:
+  submit:
+    uses: damian1000/.github/.github/workflows/dependency-submission.yml@main
