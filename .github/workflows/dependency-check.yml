@@ -1,11 +1,13 @@
 name: Dependency check
 
-# Weekly OWASP dependency-check against the shared reusable workflow. Not part of CI: the scan
-# reports advisories published since the last build rather than anything about a diff, which
-# dep-review already gates. Monday 06:00 UTC so a new advisory surfaces before the week's work.
+# OWASP dependency-check against the shared reusable workflow. Not part of CI: the scan reports
+# advisories published since the last build rather than anything about a diff, which dep-review
+# already gates. Monday and Thursday 06:00 UTC rather than weekly: GitHub evicts a cache unused
+# for seven days, so a seven-day schedule left the NVD copy expiring exactly as the next run
+# needed it and every repository re-downloaded the whole feed from cold.
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 6 * * 1,4"
   workflow_dispatch:
 
 jobs:
