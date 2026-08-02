@@ -5,185 +5,21 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 # One production deploy at a time; never cancel a release mid-flight.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up JDK 25
-        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
-        with:
-          distribution: temurin
-          java-version: "25"
-
-      - name: Set up Node # Prettier (web + config formatting) runs under Spotless
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
-
-      # The deploy pipeline re-verifies the full gate before packaging — CD owns its own
-      # go/no-go rather than trusting a separate workflow, and ships the bytes it just tested.
-      - name: Build, test, and package the distribution
-        run: ./gradlew --no-daemon clean check installDist
-
-      - name: Package distribution
-        run: tar -czf trading-system-dist.tar.gz -C build/install trading-system
-
-      - name: Upload distribution
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: trading-system-dist
-          path: trading-system-dist.tar.gz
-          if-no-files-found: error
-
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: production
+    uses: damian1000/.github/.github/workflows/deploy.yml@main
+    with:
+      app: trading-system
       url: https://trading.damianhoward.com
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # for deploy/trading-system.service and deploy/known_hosts.pub
-
-      - name: Download distribution
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: trading-system-dist
-
-      - name: Configure SSH
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          # Pinned host key rather than ssh-keyscan: trust-on-first-use accepts whatever answers
-          # on the address, so anything that could take over it would be handed the deploy key
-          # and the artifact. deploy/known_hosts.pub holds the key without the host field — an
-          # SSH host key is public by design, while the address stays in the secret.
-          awk -v host="$DEPLOY_HOST" '{ print host, $0 }' deploy/known_hosts.pub > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          printf 'Host *\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n' > ~/.ssh/config
-          chmod 600 ~/.ssh/config
-
-      - name: Ship artifact and service unit
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          scp -i ~/.ssh/deploy_key trading-system-dist.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/trading-system-dist.tar.gz"
-          scp -i ~/.ssh/deploy_key deploy/trading-system.service "$DEPLOY_USER@$DEPLOY_HOST:/tmp/trading-system.service"
-
-      # Release, health check and rollback are one remote script so the decision to roll back is
-      # made on the box: a runner that dies between "restart" and "check" cannot leave a broken
-      # release serving with nothing left to react to it.
-      - name: Release, verify, and roll back on failure
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            bash -seuo pipefail "$GITHUB_SHA" <<'REMOTE'
-          app="trading-system"
-          hold_seconds=30
-          release="${1:-manual-$(date +%Y%m%d%H%M%S)}"
-          link="$HOME/$app"
-          releases="$HOME/releases/$app"
-          target="$releases/$release"
-
-          mkdir -p "$releases"
-          rm -rf "$target"
-          mkdir -p "$target"
-          tar -xzf "/tmp/$app-dist.tar.gz" -C "$target" --strip-components=1
-          rm -f "/tmp/$app-dist.tar.gz"
-
-          # Keep the host's unit in lockstep with the version-controlled one.
-          if ! cmp -s "/tmp/$app.service" "/etc/systemd/system/$app.service"; then
-            sudo cp "/tmp/$app.service" "/etc/systemd/system/$app.service"
-            sudo systemctl daemon-reload
-            sudo systemctl enable -q "$app"
-          fi
-          rm -f "/tmp/$app.service"
-
-          # First release under this scheme: the install path is still a real directory, so it
-          # becomes the rollback target rather than being deleted.
-          if [ -d "$link" ] && [ ! -L "$link" ]; then
-            previous="$releases/legacy"
-            rm -rf "$previous"
-            mv "$link" "$previous"
-          else
-            previous="$(readlink -f "$link" 2>/dev/null || true)"
-          fi
-
-          # Swapping a symlink through rename() is atomic: the service never sees a half-copied
-          # install, which the old "delete bin and lib, then copy" release could expose.
-          switch_to() {
-            ln -sfn "$1" "$link.staging"
-            mv -Tf "$link.staging" "$link"
-          }
-
-          healthy() {
-            [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8082/readyz || true)" = "200" ]
-          }
-
-          await_health() {
-            for attempt in $(seq 1 15); do
-              if healthy; then
-                echo "$1 healthy after ${attempt} attempt(s)"
-                return 0
-              fi
-              sleep 2
-            done
-            return 1
-          }
-
-          # Readiness must still hold past the coherence grace window, so a deploy cannot go green
-          # by probing in the seconds before the fill consumer's first coherence halt (the
-          # 2026-07-19 ORA-12838 incident) — /readyz is 503 while the two views disagree.
-          holds() {
-            echo "re-checking readiness in ${hold_seconds}s"
-            sleep "$hold_seconds"
-            if healthy; then
-              echo "readiness held across the coherence window"
-              return 0
-            fi
-            echo "readiness did not hold across the coherence window"
-            return 1
-          }
-
-          switch_to "$target"
-          sudo systemctl restart "$app"
-
-          if await_health "release $release" && holds; then
-            # Three releases is enough to roll back through without filling the disk.
-            find "$releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
-              | sort -rn | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
-            rm -rf "$HOME/$app-prev"
-            exit 0
-          fi
-
-          echo "release $release did not reach and hold readiness"
-          if [ -n "$previous" ] && [ -d "$previous" ]; then
-            echo "rolling back to $previous"
-            switch_to "$previous"
-            sudo systemctl restart "$app"
-            await_health "rollback" || echo "rollback did not come up either — the service is down"
-          else
-            echo "no previous release to roll back to"
-          fi
-          exit 1
-          REMOTE
+      health-port: "8082"
+      # Longer than the shared default, and longer than the 30s coherence grace in Readiness:
+      # /readyz is 503 while the positions and limits views disagree, so a deploy must not be
+      # able to go green by probing in the seconds before the first coherence halt. This is the
+      # gate the 2026-07-19 ORA-12838 incident argued for.
+      hold-seconds: 30
+    secrets: inherit
