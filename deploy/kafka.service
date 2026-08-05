@@ -12,21 +12,27 @@ Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 # warning nobody was reading. The broker ran without its -Xms for its whole life while the unit
 # claimed otherwise.
 #
-# The heap ceiling is sized from measurement rather than a round number. The live working set is
-# ~180 MB resident; at 400 MB the heap grew cold and the kernel pushed 412 MB of it into swap,
-# which a full GC would then have had to page back in — a latency cliff on a broker.
+# 400 MB is correct and must not be trimmed on the basis of resident memory. RSS reads ~180 MB,
+# which looks like a heap sitting idle at less than half its ceiling; it is not. Forcing a full GC
+# (jcmd PID GC.run) leaves 241 MB live, so the broker genuinely needs most of this heap and the
+# rest of it is in swap rather than unused. A 256 MB ceiling would sit barely above the live set
+# and put the broker into continuous full GCs, or out of memory.
+#
+# The lesson generalises: on a swapping box RSS understates a JVM's heap requirement, because the
+# kernel has evicted pages the heap still owns. Measure the live set after a collection.
 #
 # -Xms stays unset on purpose. Pre-committing the heap is the right call on a dedicated broker and
 # the wrong one here: this box has 954 MB and shares it with trading-system.
-Environment="KAFKA_HEAP_OPTS=-Xmx256m"
+Environment="KAFKA_HEAP_OPTS=-Xmx400m"
 ExecStart=/home/ubuntu/kafka/bin/kafka-server-start.sh /home/ubuntu/kafka/config/kraft-single.properties
 ExecStop=/home/ubuntu/kafka/bin/kafka-server-stop.sh
 Restart=on-failure
 RestartSec=5
 
 # A ceiling, not a reservation: it costs nothing until something runs away, and this was the only
-# unit on either box with no bound at all. Sits above the 256 MB heap plus the ~190 MB of non-heap
-# the broker actually uses — direct buffers for network and log I/O, metaspace, thread stacks.
+# unit on either box with no bound at all. Sits above the 400 MB heap plus the non-heap the broker
+# measurably uses — 53 MB of metaspace, plus direct buffers for network and log I/O and thread
+# stacks. Deliberately not tighter: this bounds a runaway, it does not ration normal operation.
 MemoryMax=640M
 TasksMax=512
 
