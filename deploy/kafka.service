@@ -24,6 +24,23 @@ Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 # -Xms stays unset on purpose. Pre-committing the heap is the right call on a dedicated broker and
 # the wrong one here: this box has 954 MB and shares it with trading-system.
 Environment="KAFKA_HEAP_OPTS=-Xmx400m"
+# Suppresses the JMX defaults kafka-run-class.sh would otherwise apply. Its lines 202-204 test the
+# variable with -z and, when unset, substitute
+# `-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.authenticate=false
+# -Dcom.sun.management.jmxremote.ssl=false`. Nothing here reads JMX, so the broker was running an
+# unauthenticated management agent for no consumer, and its RMI socket binds every interface on a
+# random high port — observed as *:37251 alongside the three configured listeners.
+#
+# The value is inert on purpose, and both halves of that were measured rather than assumed. An
+# empty value does not work: -z treats it as unset and re-applies the default. Nor does
+# `com.sun.management.jmxremote=false` — the JVM starts the agent on the property's presence, not
+# its value, and a JDK run with that flag still reported `Agent: enabled` and still bound a
+# wildcard RMI port. Only naming no com.sun.management property at all yields `Agent: disabled`.
+#
+# Re-enabling JMX for an actual consumer means binding it deliberately: a fixed
+# com.sun.management.jmxremote.port and rmi.port, authentication on, and a firewall rule. Do not
+# reach for it by deleting this line.
+Environment="KAFKA_JMX_OPTS=-Dkafka.jmx.disabled=true"
 ExecStart=/home/ubuntu/kafka/bin/kafka-server-start.sh /home/ubuntu/kafka/config/kraft-single.properties
 ExecStop=/home/ubuntu/kafka/bin/kafka-server-stop.sh
 Restart=on-failure
