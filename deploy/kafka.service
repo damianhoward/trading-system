@@ -1,0 +1,45 @@
+[Unit]
+Description=Kafka (KRaft, single-node)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+# Quoted, and that is load-bearing. systemd splits an unquoted Environment= on whitespace and
+# treats each fragment as its own KEY=VALUE, so `Environment=KAFKA_HEAP_OPTS=-Xmx400m -Xms400m`
+# parsed as one valid assignment plus the invalid token `-Xms400m`, which it discarded with a
+# warning nobody was reading. The broker ran without its -Xms for its whole life while the unit
+# claimed otherwise.
+#
+# The heap ceiling is sized from measurement rather than a round number. The live working set is
+# ~180 MB resident; at 400 MB the heap grew cold and the kernel pushed 412 MB of it into swap,
+# which a full GC would then have had to page back in — a latency cliff on a broker.
+#
+# -Xms stays unset on purpose. Pre-committing the heap is the right call on a dedicated broker and
+# the wrong one here: this box has 954 MB and shares it with trading-system.
+Environment="KAFKA_HEAP_OPTS=-Xmx256m"
+ExecStart=/home/ubuntu/kafka/bin/kafka-server-start.sh /home/ubuntu/kafka/config/kraft-single.properties
+ExecStop=/home/ubuntu/kafka/bin/kafka-server-stop.sh
+Restart=on-failure
+RestartSec=5
+
+# A ceiling, not a reservation: it costs nothing until something runs away, and this was the only
+# unit on either box with no bound at all. Sits above the 256 MB heap plus the ~190 MB of non-heap
+# the broker actually uses — direct buffers for network and log I/O, metaspace, thread stacks.
+MemoryMax=640M
+TasksMax=512
+
+# Deliberately lighter than the application units. The broker execs shell scripts, writes its log
+# segments under /home/ubuntu, and is the one process here whose failure takes the estate's spine
+# with it, so the confinement is limited to what is provably safe rather than the full set.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
