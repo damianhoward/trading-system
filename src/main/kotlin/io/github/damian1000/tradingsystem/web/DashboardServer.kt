@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.github.damian1000.tradingsystem.capture.TradeCapture
 import io.github.damian1000.tradingsystem.health.Readiness
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ExecutorService
@@ -27,13 +28,21 @@ class DashboardServer(
     private val port: Int,
     private val readiness: Readiness? = null,
     private val maxPoolThreads: Int = 64,
+    /**
+     * Loopback by default: this server is meant to be reached through the reverse proxy that
+     * terminates TLS, applies the security headers and writes the access log, never directly.
+     * Binding every interface — which `InetSocketAddress(port)` alone does — makes that
+     * guarantee depend on a firewall rule being right somewhere else. Appended last so existing
+     * positional call sites are unaffected.
+     */
+    private val bindAddress: InetAddress = InetAddress.getLoopbackAddress(),
 ) {
     private lateinit var server: HttpServer
     private lateinit var executor: ExecutorService
 
     /** Binds and starts serving; requesting port 0 binds an ephemeral port (see [boundPort]). */
     fun start() {
-        server = HttpServer.create(InetSocketAddress(port), 0)
+        server = HttpServer.create(InetSocketAddress(bindAddress, port), 0)
         // Cached-pool reuse and keep-alive but with a hard thread ceiling: SSE streams hold their
         // pool thread, so an unbounded pool lets slow-reading clients grow memory without limit.
         // No work queue — a request queued behind saturated SSE streams would wait forever, so

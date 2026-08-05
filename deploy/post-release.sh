@@ -9,6 +9,29 @@
 # could see it.
 set -euo pipefail
 
+# Box 2's whole Caddy configuration, which was in no repository at all: a rebuilt box would have
+# come back without TLS, without the security headers, and without the access log the estate's
+# analytics collection reads.
+if ! cmp -s "$DEPLOY_DIR/Caddyfile" /etc/caddy/Caddyfile; then
+  # Validate before installing: a bad Caddyfile that reaches /etc and gets reloaded takes the site
+  # down, and nothing in the deploy would put it back.
+  sudo caddy validate --config "$DEPLOY_DIR/Caddyfile" --adapter caddyfile
+  sudo cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak-$(date +%Y%m%d%H%M%S)"
+  sudo cp "$DEPLOY_DIR/Caddyfile" /etc/caddy/Caddyfile
+  sudo systemctl reload caddy
+  echo "Caddyfile updated and caddy reloaded"
+fi
+
+# The broker's own configuration — listeners, the SASL protocol map, retention, log dirs. It holds
+# no credential (the SCRAM users live in Kafka's own metadata), so it belongs here. Without it a
+# rebuilt broker comes back on defaults: no VCN listener, no SASL protocol map, and orderbook
+# unable to reach it from box 1.
+if ! cmp -s "$DEPLOY_DIR/kraft-single.properties" /home/ubuntu/kafka/config/kraft-single.properties; then
+  cp /home/ubuntu/kafka/config/kraft-single.properties "/home/ubuntu/kafka/config/kraft-single.properties.bak-$(date +%Y%m%d%H%M%S)"
+  cp "$DEPLOY_DIR/kraft-single.properties" /home/ubuntu/kafka/config/kraft-single.properties
+  echo "kraft-single.properties updated — restart the broker deliberately to apply it"
+fi
+
 if ! cmp -s "$DEPLOY_DIR/kafka.service" /etc/systemd/system/kafka.service; then
   sudo cp "$DEPLOY_DIR/kafka.service" /etc/systemd/system/kafka.service
   sudo systemctl daemon-reload
