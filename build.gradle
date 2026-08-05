@@ -2,7 +2,7 @@
 // the Autonomous DB, reprices them through risk-engine, and serves a live dashboard. Matching
 // and pricing are library dependencies (JitPack tags), not code that lives here.
 plugins {
-    id 'io.github.damian1000.kotlin-conventions' version '0.4.12'
+    id 'io.github.damian1000.kotlin-conventions' version '0.4.13'
     id 'application'
 }
 
@@ -41,20 +41,4 @@ dependencies {
 // Only the process entry point (MainKt — main() wires the real Kafka/DB/port and blocks) is
 // excluded. The rest — consumer loop, retry/DLT, positions, persistence, risk adapter, web —
 // is exercised by tests and counted.
-def coverageExclusions = ['**/tradingsystem/MainKt.class']
-
-jacocoTestReport {
-    afterEvaluate {
-        classDirectories.setFrom(files(classDirectories.files.collect {
-            fileTree(dir: it, excludes: coverageExclusions)
-        }))
-    }
-}
-
-jacocoTestCoverageVerification {
-    afterEvaluate {
-        classDirectories.setFrom(files(classDirectories.files.collect {
-            fileTree(dir: it, excludes: coverageExclusions)
-        }))
-    }
-}
+coverageExcludes = ['**/tradingsystem/MainKt.class']
