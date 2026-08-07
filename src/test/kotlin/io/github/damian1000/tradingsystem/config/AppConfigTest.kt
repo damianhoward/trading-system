@@ -25,7 +25,7 @@ class AppConfigTest {
             AppConfig.fromEnv(
                 db +
                     mapOf(
-                        "KAFKA_BOOTSTRAP_SERVERS" to "10.0.0.91:9094",
+                        "KAFKA_BOOTSTRAP_SERVERS" to "192.0.2.10:9094",
                         "FILLS_TOPIC" to "fills",
                         "FILLS_DLT_TOPIC" to "fills.dead",
                         "LIMIT_MAX_POSITION" to "100",
@@ -33,7 +33,7 @@ class AppConfigTest {
                         "PORT" to "9000",
                     ),
             )
-        assertEquals("10.0.0.91:9094", config.kafkaBootstrapServers)
+        assertEquals("192.0.2.10:9094", config.kafkaBootstrapServers)
         assertEquals("fills", config.fillsTopic)
         assertEquals("fills.dead", config.deadLetterTopic)
         assertEquals(100, config.limitMaxPosition)
