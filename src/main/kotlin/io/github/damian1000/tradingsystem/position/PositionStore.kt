@@ -108,11 +108,12 @@ class JdbcPositionStore(
                 connection.prepareStatement(MERGE_POSITION).use { statement ->
                     statement.setString(1, fill.symbol)
                     statement.setLong(2, fill.signedSize)
-                    statement.setBigDecimal(3, fill.price)
-                    statement.setLong(4, fill.timeMillis)
-                    statement.setLong(5, fill.signedSize)
-                    statement.setBigDecimal(6, fill.price)
-                    statement.setLong(7, fill.timeMillis)
+                    statement.setLong(3, fill.timeMillis)
+                    statement.setBigDecimal(4, fill.price)
+                    statement.setLong(5, fill.timeMillis)
+                    statement.setLong(6, fill.signedSize)
+                    statement.setBigDecimal(7, fill.price)
+                    statement.setLong(8, fill.timeMillis)
                     statement.executeUpdate()
                 }
                 val position = selectPosition(connection, fill.symbol)
@@ -199,9 +200,21 @@ class JdbcPositionStore(
         private const val INSERT_FILL =
             "INSERT INTO fills (source_topic, source_partition, source_offset, symbol, price, signed_size, " +
                 "maker_order_id, taker_order_id, time_millis, exec_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+        // quantity accumulates, so it is order-independent and adds unconditionally. last_price and
+        // last_time_millis describe the most recent fill, which is an ordering claim, so they move
+        // only when this fill is at least as recent as the row's.
+        //
+        // Today that guard cannot fire: orderbook.fills has one partition, so offsets totally order
+        // the stream and fills arrive newest-last. It is written this way because the assumption is
+        // invisible at the call site and repartitioning is an operational change nobody would
+        // connect to a price going backwards. `>=` rather than `>` keeps the single-partition
+        // behaviour exactly: two fills in the same millisecond still resolve to the later offset.
         private const val MERGE_POSITION =
             "MERGE INTO positions p USING (SELECT ? AS symbol FROM dual) src ON (p.symbol = src.symbol) " +
-                "WHEN MATCHED THEN UPDATE SET quantity = p.quantity + ?, last_price = ?, last_time_millis = ? " +
+                "WHEN MATCHED THEN UPDATE SET quantity = p.quantity + ?, " +
+                "last_price = CASE WHEN ? >= p.last_time_millis THEN ? ELSE p.last_price END, " +
+                "last_time_millis = GREATEST(p.last_time_millis, ?) " +
                 "WHEN NOT MATCHED THEN INSERT (symbol, quantity, last_price, last_time_millis) " +
                 "VALUES (src.symbol, ?, ?, ?)"
         private const val SELECT_ONE =

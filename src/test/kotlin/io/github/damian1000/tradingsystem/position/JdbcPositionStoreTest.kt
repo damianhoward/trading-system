@@ -115,6 +115,33 @@ class JdbcPositionStoreTest {
     }
 
     @Test
+    fun `an older fill accumulates quantity without walking the last price backwards`() {
+        // Quantity accumulates and is order-independent; last_price and last_time_millis are an
+        // ordering claim. One partition means this cannot happen today, which is exactly why the
+        // guard is here — repartitioning is an operational change nobody would connect to a mark
+        // moving backwards.
+        store.record(fill(size = 5, price = "101.00000000", ts = 2000), source(1))
+        val outcome = store.record(fill(size = 3, price = "99.00000000", ts = 1000), source(2))
+
+        val position = (outcome as RecordOutcome.Applied).position
+        assertEquals(8, position.quantity, "both fills count toward the position")
+        assertEquals(0, BigDecimal("101.00000000").compareTo(position.lastPrice), "the newer mark survives")
+        assertEquals(2000, position.lastTimeMillis)
+    }
+
+    @Test
+    fun `a fill in the same millisecond still takes the later mark`() {
+        // `>=` rather than `>` preserves single-partition behaviour exactly: with offsets ordering
+        // the stream, the later arrival wins a tie.
+        store.record(fill(size = 5, price = "101.00000000", ts = 3000), source(1))
+        val outcome = store.record(fill(size = 1, price = "105.00000000", ts = 3000), source(2))
+
+        val position = (outcome as RecordOutcome.Applied).position
+        assertEquals(0, BigDecimal("105.00000000").compareTo(position.lastPrice))
+        assertEquals(3000, position.lastTimeMillis)
+    }
+
+    @Test
     fun `a check-constraint violation is a failure, not a replay`() {
         // The duplicate path keys on ORA-00001 rather than on the exception class, and this is
         // why. Oracle raises SQLIntegrityConstraintViolationException for a check constraint too,
