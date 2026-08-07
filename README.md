@@ -186,7 +186,7 @@ Neither consumer takes a group id — both derive their start position from the 
 ## Build
 
 ```bash
-./gradlew clean check
+./gradlew clean build
 ```
 
 JDK 25 via Gradle toolchain. The suite includes real-broker tests (fills in, positions out,
