@@ -115,6 +115,29 @@ class JdbcPositionStoreTest {
     }
 
     @Test
+    fun `a check-constraint violation is a failure, not a replay`() {
+        // The duplicate path keys on ORA-00001 rather than on the exception class, and this is
+        // why. Oracle raises SQLIntegrityConstraintViolationException for a check constraint too,
+        // so classifying by type would call this a replay: the fill would be dropped, progress
+        // would advance past it, and nothing would dead-letter it — a silently lost fill, which
+        // is the one outcome the surrounding design exists to prevent.
+        //
+        // Nothing in the live schema can raise ORA-02290 today, so the constraint is added here.
+        // The hole is latent, and what would open it is an ordinary schema change.
+        DriverManager.getConnection(oracle.jdbcUrl, oracle.username, oracle.password).use { connection ->
+            connection.createStatement().use {
+                it.execute("ALTER TABLE fills ADD CONSTRAINT fills_price_floor CHECK (price > 1000)")
+            }
+        }
+
+        val failure = assertThrows(SQLException::class.java) { store.record(fill(price = "101.00000000"), source(1)) }
+
+        assertEquals(2290, failure.errorCode, "ORA-02290, check constraint violated — propagated rather than swallowed")
+        assertTrue(store.loadLedger("orderbook.fills").fills.isEmpty(), "the rejected fill left nothing behind")
+        assertTrue(store.loadAll().isEmpty())
+    }
+
+    @Test
     fun `a failure after the ledger insert rolls the whole transaction back`() {
         val failing =
             JdbcPositionStore {

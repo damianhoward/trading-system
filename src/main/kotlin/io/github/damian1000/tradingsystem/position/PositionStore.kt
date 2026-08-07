@@ -87,9 +87,21 @@ class JdbcPositionStore(
                         statement.setString(10, fill.execId)
                         statement.executeUpdate()
                     }
-                } catch (_: SQLIntegrityConstraintViolationException) {
-                    // Either uniqueness boundary: the coordinate primary key (same record again)
-                    // or the exec_id index (same execution at new coordinates) — a replay either way.
+                } catch (e: SQLIntegrityConstraintViolationException) {
+                    // ORA-00001 specifically, not the whole exception type. Either uniqueness
+                    // boundary means a replay: the coordinate primary key (same record again) or
+                    // the exec_id index (same execution at new coordinates).
+                    //
+                    // Oracle raises this same exception class for NOT NULL and check-constraint
+                    // failures, which are data errors and the opposite of a replay. Treating one
+                    // as a duplicate would drop the fill, advance progress past it, and
+                    // dead-letter nothing — silently losing a fill, which is the single outcome
+                    // the surrounding design exists to prevent. Nothing can trigger that today
+                    // (every column is NOT NULL and Kotlin's non-null types guard them, and there
+                    // are no check constraints), so this is a latent hole rather than a live one.
+                    // It is worth closing because the thing that opens it — adding a check
+                    // constraint — is an ordinary schema change that would look entirely safe.
+                    if (e.errorCode != ORA_UNIQUE_CONSTRAINT_VIOLATED) throw e
                     connection.rollback()
                     return RecordOutcome.Duplicate
                 }
@@ -181,6 +193,9 @@ class JdbcPositionStore(
         )
 
     companion object {
+        /** ORA-00001, "unique constraint violated" — the only integrity failure that means replay. */
+        private const val ORA_UNIQUE_CONSTRAINT_VIOLATED = 1
+
         private const val INSERT_FILL =
             "INSERT INTO fills (source_topic, source_partition, source_offset, symbol, price, signed_size, " +
                 "maker_order_id, taker_order_id, time_millis, exec_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
