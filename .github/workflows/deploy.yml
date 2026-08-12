@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   deploy:
-    uses: damian1000/.github/.github/workflows/deploy.yml@main
+    uses: damianhoward/.github/.github/workflows/deploy.yml@main
     with:
       app: trading-system
       url: https://trading.damianhoward.com
