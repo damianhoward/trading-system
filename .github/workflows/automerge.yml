@@ -17,5 +17,5 @@ permissions: {}
 
 jobs:
   auto-merge:
-    uses: damian1000/.github/.github/workflows/automerge.yml@main
+    uses: damianhoward/.github/.github/workflows/automerge.yml@main
     secrets: inherit

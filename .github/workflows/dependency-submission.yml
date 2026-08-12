@@ -22,4 +22,4 @@ permissions:
 
 jobs:
   submit:
-    uses: damian1000/.github/.github/workflows/dependency-submission.yml@main
+    uses: damianhoward/.github/.github/workflows/dependency-submission.yml@main

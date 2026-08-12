@@ -15,4 +15,4 @@ permissions:
 
 jobs:
   analyze:
-    uses: damian1000/.github/.github/workflows/codeql.yml@main
+    uses: damianhoward/.github/.github/workflows/codeql.yml@main

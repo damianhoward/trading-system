@@ -10,4 +10,4 @@ permissions:
 
 jobs:
   dependency-review:
-    uses: damian1000/.github/.github/workflows/dep-review.yml@main
+    uses: damianhoward/.github/.github/workflows/dep-review.yml@main
