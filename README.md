@@ -1,13 +1,13 @@
 # trading-system
 
-[![CI](https://github.com/damian1000/trading-system/actions/workflows/ci.yml/badge.svg)](https://github.com/damian1000/trading-system/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/damian1000/trading-system/actions/workflows/codeql.yml/badge.svg)](https://github.com/damian1000/trading-system/actions/workflows/codeql.yml)
-[![codecov](https://codecov.io/gh/damian1000/trading-system/graph/badge.svg)](https://codecov.io/gh/damian1000/trading-system)
+[![CI](https://github.com/damianhoward/trading-system/actions/workflows/ci.yml/badge.svg)](https://github.com/damianhoward/trading-system/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/damianhoward/trading-system/actions/workflows/codeql.yml/badge.svg)](https://github.com/damianhoward/trading-system/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/damianhoward/trading-system/graph/badge.svg)](https://codecov.io/gh/damianhoward/trading-system)
 
-Post-trade integration over the [orderbook](https://github.com/damian1000/orderbook) fill stream:
+Post-trade integration over the [orderbook](https://github.com/damianhoward/orderbook) fill stream:
 consumes fills off Kafka into a durable fill ledger in an Oracle Autonomous Database, derives net
 positions in the same transaction, reprices the book through the
-[risk-engine](https://github.com/damian1000/risk-engine) library, and serves a live
+[risk-engine](https://github.com/damianhoward/risk-engine) library, and serves a live
 positions/risk/PnL dashboard.
 
 **▶ Live: https://trading.damianhoward.com** — submit an order that crosses on
@@ -28,8 +28,8 @@ orderbook.fills (Kafka) ──┬─► FillConsumer (seek from ledger) ──�
 Matching and pricing are versioned library dependencies, not code in this repo:
 
 ```groovy
-implementation 'com.github.damian1000:orderbook:v1.0.0'
-implementation 'com.github.damian1000:risk-engine:v1.0.0'
+implementation 'com.github.damianhoward:orderbook:v1.0.0'
+implementation 'com.github.damianhoward:risk-engine:v1.0.0'
 ```
 
 ## The book of record: idempotent fill application
