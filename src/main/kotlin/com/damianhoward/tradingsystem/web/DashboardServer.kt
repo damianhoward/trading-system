@@ -70,6 +70,13 @@ class DashboardServer(
         when (exchange.requestURI.path) {
             "/healthz" -> get(exchange) { respond(exchange, 200, "text/plain", "ok") }
             "/readyz" -> get(exchange) { ready(exchange) }
+            // Prometheus text, from the same snapshot /readyz renders, so the two cannot disagree.
+            // Empty rather than 404 where readiness is unwired (tests and the dashboard-only mode):
+            // a scrape target that exists and reports nothing is a state a collector understands.
+            "/metrics" ->
+                get(exchange) {
+                    respond(exchange, 200, "text/plain; version=0.0.4; charset=utf-8", readiness?.metrics() ?: "")
+                }
             "/" -> get(exchange) { respond(exchange, 200, "text/html; charset=utf-8", assets.indexHtml) }
             "/privacy" -> get(exchange) { respond(exchange, 200, "text/html; charset=utf-8", assets.privacyHtml) }
             "/app.css" -> get(exchange) { respond(exchange, 200, "text/css; charset=utf-8", assets.appCss) }
