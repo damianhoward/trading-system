@@ -11,6 +11,7 @@ import io.github.damian1000.tradingsystem.position.Position
 import io.github.damian1000.tradingsystem.position.PositionBook
 import io.github.damian1000.tradingsystem.position.PositionStore
 import io.github.damian1000.tradingsystem.position.RecordOutcome
+import io.github.damian1000.tradingsystem.position.SymbolTotals
 import io.github.damian1000.tradingsystem.pricing.MarketAssumptions
 import io.github.damian1000.tradingsystem.pricing.RiskGateway
 import io.github.damian1000.tradingsystem.web.Broadcaster
@@ -72,6 +73,8 @@ class FillPipelineIntegrationTest {
         override fun loadAll(): List<Position> = positions.values.sortedBy { it.symbol }
 
         override fun loadLedger(topic: String): Ledger = Ledger(applied.map { it.first }, emptyMap())
+
+        override fun symbolTotals(): List<SymbolTotals> = positions.values.map { SymbolTotals(it.symbol, it.quantity, it.quantity) }
 
         override fun ping(): Boolean = true
     }

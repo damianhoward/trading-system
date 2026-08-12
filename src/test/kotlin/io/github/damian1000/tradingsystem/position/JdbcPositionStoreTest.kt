@@ -215,6 +215,80 @@ class JdbcPositionStoreTest {
         assertFalse(dead.ping())
     }
 
+    /** Runs statements the application has no reason to expose, to break the invariant on purpose. */
+    private fun execute(sql: String) {
+        DriverManager.getConnection(oracle.jdbcUrl, oracle.username, oracle.password).use { connection ->
+            connection.createStatement().use { it.execute(sql) }
+        }
+    }
+
+    @Test
+    fun `a book built only by the write path reconciles`() {
+        store.record(fill(symbol = "SIM", size = 5), source(1))
+        store.record(fill(symbol = "SIM", side = Side.OFFER, size = 2, ts = 2000), source(2))
+        store.record(fill(symbol = "ABC", size = 7, ts = 3000), source(3))
+
+        val totals = store.symbolTotals()
+
+        assertEquals(listOf("ABC", "SIM"), totals.map { it.symbol })
+        assertEquals(Reconciliation.of(totals, 1).divergences, emptyList<Divergence>())
+        assertEquals(SymbolTotals("SIM", ledgerQuantity = 3, positionQuantity = 3), totals[1])
+    }
+
+    @Test
+    fun `a position edited behind the ledger's back is caught`() {
+        // The check earns its place here or nowhere. record() keeps the two tables consistent in one
+        // transaction, so the only way to produce a divergence is to go around it — which is exactly
+        // what a bad restore, a manual correction or a later schema change would do.
+        store.record(fill(symbol = "SIM", size = 5), source(1))
+        execute("UPDATE positions SET quantity = 9 WHERE symbol = 'SIM'")
+
+        val result = Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1)
+
+        assertFalse(result.agrees)
+        assertEquals(Divergence("SIM", ledgerQuantity = 5, positionQuantity = 9), result.divergences.single())
+    }
+
+    @Test
+    fun `a position whose fills have gone missing is a divergence, not an absence`() {
+        // The FULL OUTER JOIN's reason for being: an inner join would silently drop the symbol and
+        // report a clean book, which is the worst available answer to "did we lose history".
+        store.record(fill(symbol = "SIM", size = 5), source(1))
+        execute("DELETE FROM fills WHERE symbol = 'SIM'")
+
+        val result = Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1)
+
+        assertEquals(Divergence("SIM", ledgerQuantity = 0, positionQuantity = 5), result.divergences.single())
+    }
+
+    @Test
+    fun `a ledger the positions table never absorbed is a divergence too`() {
+        store.record(fill(symbol = "SIM", size = 5), source(1))
+        execute("DELETE FROM positions WHERE symbol = 'SIM'")
+
+        val result = Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1)
+
+        assertEquals(Divergence("SIM", ledgerQuantity = 5, positionQuantity = 0), result.divergences.single())
+    }
+
+    @Test
+    fun `an empty database reconciles rather than erroring`() {
+        assertTrue(store.symbolTotals().isEmpty())
+        assertTrue(Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1).agrees)
+    }
+
+    @Test
+    fun `fills from a second topic count toward the position they moved`() {
+        // record() merges the position whatever topic the fill arrived on, so the sum must not be
+        // filtered by topic — a replayed-topic fill that moved the book has to be in the total.
+        store.record(fill(symbol = "SIM", size = 5), source(1))
+        store.record(fill(symbol = "SIM", size = 3, ts = 2000), FillSource("orderbook.fills.replayed", 0, 1))
+
+        val totals = store.symbolTotals().single()
+
+        assertEquals(SymbolTotals("SIM", ledgerQuantity = 8, positionQuantity = 8), totals)
+    }
+
     /** A connection that fails exactly between the ledger insert and the position merge. */
     private class FailOnMerge(
         private val real: Connection,

@@ -14,6 +14,7 @@ import io.github.damian1000.tradingsystem.limits.LimitsChecker
 import io.github.damian1000.tradingsystem.limits.RiskLimits
 import io.github.damian1000.tradingsystem.position.JdbcPositionStore
 import io.github.damian1000.tradingsystem.position.PositionBook
+import io.github.damian1000.tradingsystem.position.ReconciliationChecker
 import io.github.damian1000.tradingsystem.pricing.MarketAssumptions
 import io.github.damian1000.tradingsystem.pricing.RiskGateway
 import io.github.damian1000.tradingsystem.web.DashboardServer
@@ -21,12 +22,15 @@ import io.github.damian1000.tradingsystem.web.SseBroadcaster
 import io.github.damian1000.tradingsystem.web.WebAssets
 import org.flywaydb.core.Flyway
 import java.sql.DriverManager
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
 /**
  * Composition root: reads config, migrates the schema, warms both views from the fill ledger,
  * and wires fills → positions → risk → dashboard plus the independent limits view over the same
- * topic. Plumbing only — every collaborator is constructed here and tested elsewhere.
+ * topic, with a periodic check that the book still equals the fills behind it. Plumbing only —
+ * every collaborator is constructed here and tested elsewhere.
  *
  * A consumer that dies on an unexpected exception exits the process: continuing would mean
  * committing past records that are in neither the ledger nor the DLT, and systemd's
@@ -94,6 +98,21 @@ fun main(args: Array<String>) {
             onFatal = fatal,
         )
 
+    // One pass before the server starts, so the probe is never answering from an empty result:
+    // an unpopulated check and a failing one are the same 503, and starting into it would make
+    // every deploy look like a divergence for the first interval.
+    val reconciler = ReconciliationChecker(store::symbolTotals).apply { run() }
+    val reconciliations =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "position-reconciler").apply { isDaemon = true }
+        }
+    reconciliations.scheduleWithFixedDelay(
+        reconciler::run,
+        ReconciliationChecker.INTERVAL.toMillis(),
+        ReconciliationChecker.INTERVAL.toMillis(),
+        TimeUnit.MILLISECONDS,
+    )
+
     val readiness =
         Readiness(
             consumers = listOf(consumer.health, limitsConsumer.health),
@@ -102,6 +121,7 @@ fun main(args: Array<String>) {
             deadLettersFailed = deadLetters::failed,
             positionsView = capture::progress,
             limitsView = limits::progress,
+            reconciliation = reconciler::latest,
         )
     val server = DashboardServer(capture, broadcaster, WebAssets.load(), config.port, readiness)
 
@@ -109,6 +129,7 @@ fun main(args: Array<String>) {
         Thread {
             consumer.close()
             limitsConsumer.close()
+            reconciliations.shutdownNow()
             deadLetters.close()
             broadcaster.close()
             server.stop()

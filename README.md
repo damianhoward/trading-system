@@ -157,10 +157,31 @@ Two endpoints report health at different depths:
 - `/readyz` — readiness: every consumer thread alive, assigned, and recently polling; the
   database answering; the positions and limits views at the same stream offset (independent
   consumers may sit apart mid-burst, so divergence gets a 30 s grace window — offsets still
-  apart after that mean a projection is stuck); dead-letter publish/failure counters. Returns
-  503 with the failing component named when the pipeline is broken or the projections disagree,
-  whatever the web process says. Deploys gate on this, so a deploy whose consumers cannot
-  attach — or whose views cannot converge — fails instead of going green.
+  apart after that mean a projection is stuck); the book reconciling against the ledger it is
+  derived from; dead-letter publish/failure counters. Returns 503 with the failing component
+  named when the pipeline is broken or the projections disagree, whatever the web process says.
+  Deploys gate on this, so a deploy whose consumers cannot attach — or whose views cannot
+  converge — fails instead of going green.
+
+### Reconciliation
+
+Equal offsets prove the two views have read the same amount of stream. They do not prove either
+holds the right number: a position that has drifted from its fills sits at the correct offset
+with the wrong quantity, and nothing in the request path would notice, because the dashboard,
+the limits view and the risk report all read `positions` and would agree with each other while
+disagreeing with the record of what actually traded.
+
+So a background pass asserts the conservation property — **every position equals the signed sum
+of its ledger fills** — every minute, and `/readyz` fails when it does not hold, naming each
+symbol with both quantities and the gap between them. The write path maintains that invariant by
+construction, inserting the fill and moving the position in one transaction, which is precisely
+why it is worth checking: the ways it can still break are a restore to the wrong point, a manual
+correction, a migration that touches one table, or a later change to the merge.
+
+Both sides are read in one SQL statement, so they describe the same instant and a fill
+committing mid-check cannot manufacture a divergence that was never real. The probe also fails
+when the check itself goes stale — a checker that has stopped leaves a passing result behind it,
+which reads exactly like a book that reconciles.
 
 The snapshot itself carries a `sync` block — each consumer path's last stream offset and fill
 timestamp, whether the two views are coherent, how many replays the ledger dropped, and how many

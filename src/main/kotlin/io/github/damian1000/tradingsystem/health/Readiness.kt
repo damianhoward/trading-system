@@ -2,6 +2,8 @@ package io.github.damian1000.tradingsystem.health
 
 import io.github.damian1000.tradingsystem.consume.ConsumerHealth
 import io.github.damian1000.tradingsystem.consume.ConsumerProgress
+import io.github.damian1000.tradingsystem.position.Reconciliation
+import io.github.damian1000.tradingsystem.position.ReconciliationChecker
 import java.time.Clock
 import java.time.Duration
 
@@ -17,6 +19,14 @@ import java.time.Duration
  * unequal past [coherenceGrace] mean a view is stuck, and the probe goes 503 naming both
  * positions. Past dead-letter failures are reported but do not fail the probe (an unacknowledged
  * send already fails fast at the moment it happens).
+ *
+ * Reconciliation asks the question coherence cannot. Equal offsets prove the two views have read
+ * the same amount of stream, not that either holds the right number; a position that drifted from
+ * its ledger sits at the correct offset with the wrong quantity. So the probe also fails when the
+ * book stops agreeing with the fills it derives from, or when the check establishing that has gone
+ * stale — no grace window, because unlike the two consumers there is no race that makes a
+ * divergence briefly legitimate. It is read at one instant from one statement, so it is either
+ * true or it is a defect.
  */
 class Readiness(
     private val consumers: List<ConsumerHealth>,
@@ -25,8 +35,10 @@ class Readiness(
     private val deadLettersFailed: () -> Long,
     private val positionsView: () -> ConsumerProgress?,
     private val limitsView: () -> ConsumerProgress?,
+    private val reconciliation: () -> Reconciliation?,
     private val maxPollAge: Duration = MAX_POLL_AGE,
     private val coherenceGrace: Duration = COHERENCE_GRACE,
+    private val maxReconciliationAge: Duration = ReconciliationChecker.MAX_AGE,
     private val clock: Clock = Clock.systemUTC(),
 ) {
     data class Probe(
@@ -41,12 +53,34 @@ class Readiness(
         val consumerStates = consumers.map { consumerState(it) }
         val database = databaseOk()
         val views = viewsState()
-        val ready = database && views.second && consumerStates.all { it.second }
+        val ledger = ledgerState()
+        val ready = database && views.second && ledger.second && consumerStates.all { it.second }
         val json =
             """{"ready":$ready,"consumers":{${consumerStates.joinToString(",") { it.first }}},""" +
-                """"database":{"ok":$database},"views":${views.first},""" +
+                """"database":{"ok":$database},"views":${views.first},"ledger":${ledger.first},""" +
                 """"deadLetters":{"published":${deadLettersPublished()},"failed":${deadLettersFailed()}}}"""
         return Probe(ready, json)
+    }
+
+    /**
+     * The conservation check's standing verdict. Divergences are named individually with both
+     * quantities: an operator seeing 503 needs the symbol and the size of the gap, and there is
+     * nothing secret in either — they are the same numbers the public dashboard already serves.
+     */
+    private fun ledgerState(): Pair<String, Boolean> {
+        val latest = reconciliation()
+        val ageMillis = latest?.let { clock.millis() - it.checkedAtMillis }
+        val fresh = ageMillis != null && ageMillis <= maxReconciliationAge.toMillis()
+        val ok = fresh && latest!!.agrees
+        val divergences =
+            latest?.divergences.orEmpty().joinToString(",") {
+                """{"symbol":${quote(it.symbol)},"ledgerQuantity":${it.ledgerQuantity},""" +
+                    """"positionQuantity":${it.positionQuantity},"difference":${it.difference}}"""
+            }
+        val json =
+            """{"ok":$ok,"checkedAgeMillis":${ageMillis ?: "null"},""" +
+                """"symbolsChecked":${latest?.symbolsChecked ?: "null"},"divergences":[$divergences]}"""
+        return json to ok
     }
 
     private fun viewsState(): Pair<String, Boolean> {

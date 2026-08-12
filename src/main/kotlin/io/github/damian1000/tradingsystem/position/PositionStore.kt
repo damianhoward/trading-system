@@ -40,6 +40,14 @@ interface PositionStore {
     /** Every ledger fill in stream order, plus the highest applied offset per partition of [topic]. */
     fun loadLedger(topic: String): Ledger
 
+    /**
+     * Every symbol known to either table, with its signed ledger sum beside its stored position,
+     * for the conservation check in [Reconciliation]. Symbols present in only one of the two are
+     * included with zero on the missing side: a position with no fills behind it and a ledger the
+     * position never absorbed are both divergences, and omitting either would hide one.
+     */
+    fun symbolTotals(): List<SymbolTotals>
+
     /** True when the database answers a trivial query — the readiness probe's connectivity check. */
     fun ping(): Boolean
 }
@@ -174,6 +182,25 @@ class JdbcPositionStore(
             }
         }
 
+    override fun symbolTotals(): List<SymbolTotals> =
+        connect().use { connection ->
+            connection.prepareStatement(SELECT_SYMBOL_TOTALS).use { statement ->
+                statement.executeQuery().use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(
+                                SymbolTotals(
+                                    symbol = rows.getString("symbol"),
+                                    ledgerQuantity = rows.getLong("ledger_quantity"),
+                                    positionQuantity = rows.getLong("position_quantity"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
     override fun ping(): Boolean =
         try {
             connect().use { connection ->
@@ -222,6 +249,24 @@ class JdbcPositionStore(
         private const val SELECT_ALL =
             "SELECT symbol, quantity, last_price, last_time_millis FROM positions ORDER BY symbol"
         private const val PING = "SELECT 1 FROM dual"
+
+        // One statement, not two queries, because Oracle gives a single statement one read-consistent
+        // snapshot: the aggregate and the positions it is compared against are read at the same SCN,
+        // so a fill committing mid-check cannot produce a divergence that was never real.
+        //
+        // No source_topic predicate. record() merges the position for every fill it applies whatever
+        // topic it arrived on, so the position is the sum over all topics; filtering to one here
+        // would report a false divergence the day a second topic is consumed.
+        //
+        // FULL OUTER JOIN so a symbol in only one table still appears, with zero on the side that
+        // lacks it — those are the two most interesting divergences, not edge cases to drop.
+        private const val SELECT_SYMBOL_TOTALS =
+            "SELECT COALESCE(l.symbol, p.symbol) AS symbol, " +
+                "COALESCE(l.ledger_quantity, 0) AS ledger_quantity, " +
+                "COALESCE(p.quantity, 0) AS position_quantity " +
+                "FROM (SELECT symbol, SUM(signed_size) AS ledger_quantity FROM fills GROUP BY symbol) l " +
+                "FULL OUTER JOIN positions p ON p.symbol = l.symbol " +
+                "ORDER BY 1"
         private const val SELECT_LEDGER =
             "SELECT source_partition, source_offset, symbol, price, signed_size, maker_order_id, taker_order_id, " +
                 "time_millis, exec_id FROM fills WHERE source_topic = ? ORDER BY source_partition, source_offset"

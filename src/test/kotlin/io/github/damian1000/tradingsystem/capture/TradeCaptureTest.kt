@@ -13,6 +13,7 @@ import io.github.damian1000.tradingsystem.position.Position
 import io.github.damian1000.tradingsystem.position.PositionBook
 import io.github.damian1000.tradingsystem.position.PositionStore
 import io.github.damian1000.tradingsystem.position.RecordOutcome
+import io.github.damian1000.tradingsystem.position.SymbolTotals
 import io.github.damian1000.tradingsystem.pricing.MarketAssumptions
 import io.github.damian1000.tradingsystem.pricing.RiskGateway
 import io.github.damian1000.tradingsystem.web.Broadcaster
@@ -55,6 +56,18 @@ class TradeCaptureTest {
         override fun loadAll(): List<Position> = positions.values.sortedBy { it.symbol }
 
         override fun loadLedger(topic: String): Ledger = Ledger(ledger.values.toList(), emptyMap())
+
+        // Derived from both maps rather than asserted equal, so this double can express a
+        // divergence at all — a stand-in that reports agreement by construction could never fail
+        // the check it stands in for.
+        override fun symbolTotals(): List<SymbolTotals> =
+            (ledger.values.map { it.symbol } + positions.keys).distinct().sorted().map { symbol ->
+                SymbolTotals(
+                    symbol = symbol,
+                    ledgerQuantity = ledger.values.filter { it.symbol == symbol }.sumOf { it.signedSize },
+                    positionQuantity = positions[symbol]?.quantity ?: 0L,
+                )
+            }
 
         override fun ping(): Boolean = true
     }

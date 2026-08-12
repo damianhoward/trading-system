@@ -2,6 +2,8 @@ package io.github.damian1000.tradingsystem.health
 
 import io.github.damian1000.tradingsystem.consume.ConsumerHealth
 import io.github.damian1000.tradingsystem.consume.ConsumerProgress
+import io.github.damian1000.tradingsystem.position.Reconciliation
+import io.github.damian1000.tradingsystem.position.SymbolTotals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -30,6 +32,9 @@ class ReadinessTest {
     private val consumer = ConsumerHealth("fills", clock)
     private var positionsOffset: Long? = 9L
     private var limitsOffset: Long? = 9L
+    private var reconciliation: Reconciliation? = agreeingReconciliation()
+
+    private fun agreeingReconciliation() = Reconciliation.of(listOf(SymbolTotals("SIM", 4, 4)), checkedAtMillis = clock.millis())
 
     private fun readiness(databaseOk: Boolean = true) =
         Readiness(
@@ -39,6 +44,7 @@ class ReadinessTest {
             deadLettersFailed = { 1 },
             positionsView = { positionsOffset?.let { ConsumerProgress(it, 1000) } },
             limitsView = { limitsOffset?.let { ConsumerProgress(it, 1000) } },
+            reconciliation = { reconciliation },
             clock = clock,
         )
 
@@ -165,5 +171,74 @@ class ReadinessTest {
         val probe = probes.probe()
         assertFalse(probe.ready, "one view at the ledger and one at nothing cannot both be right")
         assertTrue(probe.json.contains(""""positionsOffset":null,"limitsOffset":9,"coherent":false"""), probe.json)
+    }
+
+    @Test
+    fun `a book that reconciles reports the check and stays ready`() {
+        healthyConsumer()
+        val probe = readiness().probe()
+        assertTrue(probe.ready)
+        assertTrue(probe.json.contains(""""ledger":{"ok":true,"checkedAgeMillis":0"""), probe.json)
+        assertTrue(probe.json.contains(""""symbolsChecked":1,"divergences":[]"""), probe.json)
+    }
+
+    @Test
+    fun `a position that has drifted from its ledger fails the probe and names the gap`() {
+        healthyConsumer()
+        reconciliation =
+            Reconciliation.of(
+                listOf(SymbolTotals("SIM", ledgerQuantity = 10, positionQuantity = 13)),
+                checkedAtMillis = clock.millis(),
+            )
+
+        val probe = readiness().probe()
+
+        assertFalse(probe.ready, "a book that disagrees with its fills is not safe to serve")
+        assertTrue(
+            probe.json.contains(
+                """{"symbol":"SIM","ledgerQuantity":10,"positionQuantity":13,"difference":3}""",
+            ),
+            probe.json,
+        )
+    }
+
+    @Test
+    fun `coherent offsets do not rescue a divergent book`() {
+        // The distinction the whole check exists for: both views have read the same amount of
+        // stream, and the number one of them holds is still wrong.
+        healthyConsumer()
+        reconciliation =
+            Reconciliation.of(listOf(SymbolTotals("SIM", 10, 13)), checkedAtMillis = clock.millis())
+
+        val probe = readiness().probe()
+
+        assertTrue(probe.json.contains(""""coherent":true"""), probe.json)
+        assertFalse(probe.ready)
+    }
+
+    @Test
+    fun `a reconciliation that has stopped being refreshed fails once it goes stale`() {
+        healthyConsumer()
+        clock.advance(Duration.ofMinutes(4))
+        consumer.polled()
+        assertTrue(readiness().probe().ready, "4m is within the 5m staleness budget")
+
+        clock.advance(Duration.ofMinutes(2))
+        consumer.polled()
+        val probe = readiness().probe()
+        assertFalse(probe.ready, "a check that stopped running is not a book that reconciles")
+        assertTrue(probe.json.contains(""""checkedAgeMillis":360000"""), probe.json)
+    }
+
+    @Test
+    fun `a probe taken before the first reconciliation is not ready`() {
+        healthyConsumer()
+        reconciliation = null
+
+        val probe = readiness().probe()
+
+        assertFalse(probe.ready, "nothing has established the book agrees with its ledger yet")
+        assertTrue(probe.json.contains(""""ledger":{"ok":false,"checkedAgeMillis":null"""), probe.json)
+        assertTrue(probe.json.contains(""""symbolsChecked":null"""), probe.json)
     }
 }
