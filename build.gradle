@@ -2,7 +2,7 @@
 // the Autonomous DB, reprices them through risk-engine, and serves a live dashboard. Matching
 // and pricing are library dependencies (JitPack tags), not code that lives here.
 plugins {
-    id 'io.github.damian1000.kotlin-conventions' version '0.4.16'
+    id 'com.damianhoward.kotlin-conventions' version '0.5.0'
     id 'application'
 }
 
@@ -19,8 +19,8 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.damian1000:orderbook:v1.0.2'
-    implementation 'com.github.damian1000:risk-engine:v1.0.3'
+    implementation 'com.github.damianhoward:orderbook:v1.0.2'
+    implementation 'com.github.damianhoward:risk-engine:v1.0.3'
     implementation deps.kafka.clients
     implementation deps.flyway.core
     runtimeOnly deps.flyway.oracle
