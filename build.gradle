@@ -19,8 +19,8 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.damianhoward:orderbook:v1.0.2'
-    implementation 'com.github.damianhoward:risk-engine:v1.0.3'
+    implementation 'com.github.damianhoward:orderbook:v3.0.0'
+    implementation 'com.github.damianhoward:risk-engine:v2.0.0'
     implementation deps.kafka.clients
     implementation deps.flyway.core
     runtimeOnly deps.flyway.oracle

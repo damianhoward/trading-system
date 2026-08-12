@@ -88,7 +88,7 @@ class RiskGateway(
             }
         val market =
             MarketData(
-                spot = Money(marked.lastPrice),
+                spot = Money.of(marked.lastPrice),
                 volatility = assumptions.volatility,
                 riskFreeRate = assumptions.riskFreeRate,
                 dividendYield = assumptions.dividendYield,
@@ -97,7 +97,7 @@ class RiskGateway(
         // The prior mark sits one day behind the current one, so time runs forward to today.
         val priorMarket =
             openPrice?.let {
-                market.copy(spot = Money(it), timeToExpiry = assumptions.timeToExpiry + ONE_DAY)
+                market.copy(spot = Money.of(it), timeToExpiry = assumptions.timeToExpiry + ONE_DAY)
             }
         return assembler.assemble(portfolio, market, assumptions.scenarioReturns, assumptions.confidence, priorMarket)
     }
