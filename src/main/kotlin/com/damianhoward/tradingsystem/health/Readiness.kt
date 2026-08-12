@@ -2,6 +2,7 @@ package com.damianhoward.tradingsystem.health
 
 import com.damianhoward.tradingsystem.consume.ConsumerHealth
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
+import com.damianhoward.tradingsystem.position.Divergence
 import com.damianhoward.tradingsystem.position.Reconciliation
 import com.damianhoward.tradingsystem.position.ReconciliationChecker
 import java.time.Clock
@@ -49,17 +50,71 @@ class Readiness(
     @Volatile
     private var incoherentSinceMillis: Long? = null
 
-    fun probe(): Probe {
-        val consumerStates = consumers.map { consumerState(it) }
+    /**
+     * One evaluation of everything above, which both `/readyz` and `/metrics` render.
+     *
+     * Document 17 requires the two endpoints to derive from the same objects so they cannot
+     * disagree. Taking one snapshot is the strongest form of that: they cannot disagree because
+     * there is only one set of numbers, read at one instant, rendered twice.
+     */
+    private data class Snapshot(
+        val ready: Boolean,
+        val consumers: List<ConsumerState>,
+        val databaseOk: Boolean,
+        val views: ViewsState,
+        val ledger: LedgerState,
+        val deadLettersPublished: Long,
+        val deadLettersFailed: Long,
+    )
+
+    private data class ConsumerState(
+        val name: String,
+        val ok: Boolean,
+        val threadAlive: Boolean,
+        val assigned: Boolean,
+        val pollAgeMillis: Long?,
+        val fatal: String?,
+    )
+
+    private data class ViewsState(
+        val ok: Boolean,
+        val positionsOffset: Long?,
+        val limitsOffset: Long?,
+        val coherent: Boolean,
+        val incoherentForMillis: Long?,
+    )
+
+    private data class LedgerState(
+        val ok: Boolean,
+        val ageMillis: Long?,
+        val symbolsChecked: Int?,
+        val divergences: List<Divergence>,
+    )
+
+    private fun snapshot(): Snapshot {
+        val consumerStates = consumers.map(::consumerState)
         val database = databaseOk()
         val views = viewsState()
         val ledger = ledgerState()
-        val ready = database && views.second && ledger.second && consumerStates.all { it.second }
+        return Snapshot(
+            ready = database && views.ok && ledger.ok && consumerStates.all { it.ok },
+            consumers = consumerStates,
+            databaseOk = database,
+            views = views,
+            ledger = ledger,
+            deadLettersPublished = deadLettersPublished(),
+            deadLettersFailed = deadLettersFailed(),
+        )
+    }
+
+    fun probe(): Probe {
+        val now = snapshot()
         val json =
-            """{"ready":$ready,"consumers":{${consumerStates.joinToString(",") { it.first }}},""" +
-                """"database":{"ok":$database},"views":${views.first},"ledger":${ledger.first},""" +
-                """"deadLetters":{"published":${deadLettersPublished()},"failed":${deadLettersFailed()}}}"""
-        return Probe(ready, json)
+            """{"ready":${now.ready},"consumers":{${now.consumers.joinToString(",") { consumerJson(it) }}},""" +
+                """"database":{"ok":${now.databaseOk}},"views":${viewsJson(now.views)},""" +
+                """"ledger":${ledgerJson(now.ledger)},""" +
+                """"deadLetters":{"published":${now.deadLettersPublished},"failed":${now.deadLettersFailed}}}"""
+        return Probe(now.ready, json)
     }
 
     /**
@@ -67,23 +122,29 @@ class Readiness(
      * quantities: an operator seeing 503 needs the symbol and the size of the gap, and there is
      * nothing secret in either — they are the same numbers the public dashboard already serves.
      */
-    private fun ledgerState(): Pair<String, Boolean> {
+    private fun ledgerState(): LedgerState {
         val latest = reconciliation()
         val ageMillis = latest?.let { clock.millis() - it.checkedAtMillis }
         val fresh = ageMillis != null && ageMillis <= maxReconciliationAge.toMillis()
-        val ok = fresh && latest!!.agrees
+        return LedgerState(
+            ok = fresh && latest!!.agrees,
+            ageMillis = ageMillis,
+            symbolsChecked = latest?.symbolsChecked,
+            divergences = latest?.divergences.orEmpty(),
+        )
+    }
+
+    private fun ledgerJson(state: LedgerState): String {
         val divergences =
-            latest?.divergences.orEmpty().joinToString(",") {
+            state.divergences.joinToString(",") {
                 """{"symbol":${quote(it.symbol)},"ledgerQuantity":${it.ledgerQuantity},""" +
                     """"positionQuantity":${it.positionQuantity},"difference":${it.difference}}"""
             }
-        val json =
-            """{"ok":$ok,"checkedAgeMillis":${ageMillis ?: "null"},""" +
-                """"symbolsChecked":${latest?.symbolsChecked ?: "null"},"divergences":[$divergences]}"""
-        return json to ok
+        return """{"ok":${state.ok},"checkedAgeMillis":${state.ageMillis ?: "null"},""" +
+            """"symbolsChecked":${state.symbolsChecked ?: "null"},"divergences":[$divergences]}"""
     }
 
-    private fun viewsState(): Pair<String, Boolean> {
+    private fun viewsState(): ViewsState {
         val positions = positionsView()?.offset
         val limits = limitsView()?.offset
         val coherent = positions == limits
@@ -95,22 +156,162 @@ class Readiness(
                 val since = incoherentSinceMillis ?: clock.millis().also { incoherentSinceMillis = it }
                 clock.millis() - since
             }
-        val ok = coherent || incoherentFor!! <= coherenceGrace.toMillis()
-        val json =
-            """{"ok":$ok,"positionsOffset":${positions ?: "null"},"limitsOffset":${limits ?: "null"},""" +
-                """"coherent":$coherent,"incoherentForMillis":${incoherentFor ?: "null"}}"""
-        return json to ok
+        return ViewsState(
+            ok = coherent || incoherentFor!! <= coherenceGrace.toMillis(),
+            positionsOffset = positions,
+            limitsOffset = limits,
+            coherent = coherent,
+            incoherentForMillis = incoherentFor,
+        )
     }
 
-    private fun consumerState(health: ConsumerHealth): Pair<String, Boolean> {
+    private fun viewsJson(state: ViewsState): String =
+        """{"ok":${state.ok},"positionsOffset":${state.positionsOffset ?: "null"},""" +
+            """"limitsOffset":${state.limitsOffset ?: "null"},"coherent":${state.coherent},""" +
+            """"incoherentForMillis":${state.incoherentForMillis ?: "null"}}"""
+
+    private fun consumerState(health: ConsumerHealth): ConsumerState {
         val pollAge = health.pollAgeMillis()
         val polling = pollAge != null && pollAge <= maxPollAge.toMillis()
-        val ok = health.threadAlive && health.assigned && polling && health.fatal == null
-        val json =
-            """"${health.name}":{"ok":$ok,"threadAlive":${health.threadAlive},"assigned":${health.assigned},""" +
-                """"pollAgeMillis":${pollAge ?: "null"},"fatal":${health.fatal?.let { quote(it) } ?: "null"}}"""
-        return json to ok
+        return ConsumerState(
+            name = health.name,
+            ok = health.threadAlive && health.assigned && polling && health.fatal == null,
+            threadAlive = health.threadAlive,
+            assigned = health.assigned,
+            pollAgeMillis = pollAge,
+            fatal = health.fatal,
+        )
     }
+
+    private fun consumerJson(state: ConsumerState): String =
+        """"${state.name}":{"ok":${state.ok},"threadAlive":${state.threadAlive},""" +
+            """"assigned":${state.assigned},"pollAgeMillis":${state.pollAgeMillis ?: "null"},""" +
+            """"fatal":${state.fatal?.let { quote(it) } ?: "null"}}"""
+
+    /**
+     * The same snapshot in Prometheus text format, for trend and post-incident reconstruction.
+     *
+     * Every series here is a number this process computes, never text it was handed: no exception
+     * message, no file path, no rejected input. That is document 17's rule for an unauthenticated
+     * endpoint, and it costs nothing to keep, because a metric is a number by definition — the
+     * temptation this rules out is the `_info` series carrying a failure string as a label.
+     *
+     * Divergences are counted rather than named per symbol. The probe names them because an
+     * operator reading a 503 needs to know which symbol; a time series labelled by symbol would
+     * instead create one series per symbol that has ever diverged and keep it forever, which is
+     * how a small estate's metrics bill becomes someone's afternoon.
+     *
+     * Ages are seconds, not milliseconds. Prometheus convention is base units, and every
+     * dashboard, alert expression and function assumes it.
+     */
+    fun metrics(): String {
+        val now = snapshot()
+        val out = StringBuilder()
+
+        fun emit(
+            name: String,
+            help: String,
+            type: String,
+            samples: List<Pair<String, Any>>,
+        ) {
+            if (samples.isEmpty()) return
+            out
+                .append("# HELP ")
+                .append(name)
+                .append(' ')
+                .append(help)
+                .append('\n')
+            out
+                .append("# TYPE ")
+                .append(name)
+                .append(' ')
+                .append(type)
+                .append('\n')
+            for ((labels, value) in samples) {
+                out
+                    .append(name)
+                    .append(labels)
+                    .append(' ')
+                    .append(value)
+                    .append('\n')
+            }
+        }
+
+        fun gauge(
+            name: String,
+            help: String,
+            value: Any,
+        ) = emit(name, help, "gauge", listOf("" to value))
+
+        gauge("trading_system_ready", "Whether every readiness condition below currently holds.", now.ready.toInt())
+        gauge("trading_system_database_up", "Whether the database answered its check.", now.databaseOk.toInt())
+
+        emit(
+            "trading_system_consumer_up",
+            "Whether a consumer thread is alive, assigned and polling within its budget.",
+            "gauge",
+            now.consumers.map { """{consumer="${it.name}"}""" to it.ok.toInt() },
+        )
+        emit(
+            "trading_system_consumer_poll_age_seconds",
+            "Seconds since a consumer last completed a poll. Absent before its first poll.",
+            "gauge",
+            now.consumers.mapNotNull { c -> c.pollAgeMillis?.let { """{consumer="${c.name}"}""" to seconds(it) } },
+        )
+        emit(
+            "trading_system_view_offset",
+            "Stream offset each projection has applied.",
+            "gauge",
+            listOfNotNull(
+                now.views.positionsOffset?.let { """{view="positions"}""" to it },
+                now.views.limitsOffset?.let { """{view="limits"}""" to it },
+            ),
+        )
+        gauge(
+            "trading_system_views_coherent",
+            "Whether the projections have applied the same amount of stream.",
+            now.views.coherent.toInt(),
+        )
+        gauge(
+            "trading_system_ledger_agrees",
+            "Whether every position equals the signed sum of its ledger fills.",
+            now.ledger.divergences
+                .isEmpty()
+                .toInt(),
+        )
+        gauge(
+            "trading_system_ledger_divergent_symbols",
+            "Symbols whose stored position disagrees with the fills it derives from.",
+            now.ledger.divergences.size,
+        )
+        now.ledger.ageMillis?.let {
+            gauge(
+                "trading_system_ledger_check_age_seconds",
+                "Seconds since the conservation check last completed. Staleness fails readiness.",
+                seconds(it),
+            )
+        }
+        emit(
+            "trading_system_dead_letters_published_total",
+            "Records published to the dead-letter topic because they can never apply.",
+            "counter",
+            listOf("" to now.deadLettersPublished),
+        )
+        emit(
+            "trading_system_dead_letters_failed_total",
+            "Dead-letter publishes the broker did not acknowledge.",
+            "counter",
+            listOf("" to now.deadLettersFailed),
+        )
+
+        return out.toString()
+    }
+
+    private fun Boolean.toInt(): Int = if (this) 1 else 0
+
+    // Rendered rather than divided into a Double, so a duration never reaches the endpoint in
+    // exponential notation — Prometheus accepts it, humans reading a curl do not.
+    private fun seconds(millis: Long): String = "%d.%03d".format(millis / 1000, millis % 1000)
 
     private fun quote(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 

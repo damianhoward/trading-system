@@ -64,6 +64,53 @@ class ReadinessTest {
     }
 
     @Test
+    fun `metrics render the same snapshot readiness evaluates`() {
+        healthyConsumer()
+        val metrics = readiness().metrics()
+        assertTrue(metrics.contains("trading_system_ready 1"), metrics)
+        assertTrue(metrics.contains("trading_system_database_up 1"), metrics)
+        assertTrue(metrics.contains("""trading_system_consumer_up{consumer="fills"} 1"""), metrics)
+        assertTrue(metrics.contains("trading_system_view_offset{view=\"positions\"} 9"), metrics)
+        assertTrue(metrics.contains("trading_system_views_coherent 1"), metrics)
+        assertTrue(metrics.contains("trading_system_ledger_agrees 1"), metrics)
+        assertTrue(metrics.contains("trading_system_ledger_divergent_symbols 0"), metrics)
+        assertTrue(metrics.contains("trading_system_dead_letters_published_total 3"), metrics)
+        assertTrue(metrics.contains("trading_system_dead_letters_failed_total 1"), metrics)
+        // Every series is declared: an unTYPEd sample is accepted but loses its counter/gauge
+        // semantics, and rate() over a gauge is a silently wrong answer rather than an error.
+        for (line in metrics.lines().filter { it.isNotBlank() && !it.startsWith("#") }) {
+            val name = line.substringBefore('{').substringBefore(' ')
+            assertTrue(metrics.contains("# TYPE $name "), "$name has no TYPE line")
+            assertTrue(metrics.contains("# HELP $name "), "$name has no HELP line")
+        }
+    }
+
+    @Test
+    fun `metrics count divergences rather than labelling by symbol`() {
+        healthyConsumer()
+        reconciliation =
+            Reconciliation.of(
+                listOf(SymbolTotals("SIM", 4, 7), SymbolTotals("AAPL", 2, 2)),
+                checkedAtMillis = clock.millis(),
+            )
+        val metrics = readiness().metrics()
+        assertTrue(metrics.contains("trading_system_ledger_agrees 0"), metrics)
+        assertTrue(metrics.contains("trading_system_ledger_divergent_symbols 1"), metrics)
+        // One series per symbol that ever diverged would be kept forever by the collector.
+        assertFalse(metrics.contains("SIM"), "a symbol must not become a label: $metrics")
+    }
+
+    @Test
+    fun `metrics carry no free text, because the endpoint is unauthenticated`() {
+        healthyConsumer()
+        consumer.failed(java.sql.SQLRecoverableException("(HOST=db.internal)(SERVICE_NAME=trading_tp)", "08006", 17002))
+        val metrics = readiness().metrics()
+        assertFalse(metrics.contains("HOST="), metrics)
+        assertFalse(metrics.contains("SQLRecoverableException"), metrics)
+        assertTrue(metrics.contains("""trading_system_consumer_up{consumer="fills"} 0"""), metrics)
+    }
+
+    @Test
     fun `a consumer that has never polled is not ready`() {
         consumer.started()
         consumer.assigned(1)
