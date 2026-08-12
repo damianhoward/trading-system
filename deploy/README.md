@@ -8,9 +8,13 @@ of record.
 `.github/workflows/deploy.yml` is a thin caller of the estate's shared pipeline. That pipeline
 runs `clean build`, packages the `installDist` distribution once, and ships those exact bytes —
 no second build between test and release. The artifact unpacks into
-`~/releases/trading-system/<commit>`, `~/trading-system` is moved onto it with a symlink rename
-so a restart can never see a half-copied install, the unit syncs only when it differs, and
-success is gated on `/readyz`. Three releases are retained.
+`/srv/trading-system/releases/<commit>`, `/srv/trading-system/current` is moved onto it with a
+symlink rename so a restart can never see a half-copied install, and success is gated on
+`/readyz`. Three releases are retained.
+
+The release procedure itself is not sent from here. It is a root-owned script on the box, kept with
+the box's other privileged configuration, and CI asks for a release in five words with the bundle
+on stdin.
 
 ## Readiness is deliberately slow here
 
@@ -27,8 +31,14 @@ is worse than one that fails.
 
 ## Service
 
-`trading-system.service` runs the launcher with `-Xmx128m` under `MemoryMax=448M`. The gap is
-intentional. Peak observed resident is 183 MB — the highest on the estate, because the Oracle
+The unit is not in this repository. A systemd unit is a request to run anything as anyone, so a
+deploy account able to install one holds root by another name — and this box holds the ledger, the
+database wallet and the broker's SCRAM credential. `trading-system.service` therefore lives with
+the box's other privileged configuration and is applied by an operator. What CI may do here is
+restart the service, and nothing else.
+
+That unit runs the launcher with `-Xmx128m` under `MemoryMax=448M`. The gap is intentional.
+Peak observed resident is 183 MB — the highest on the estate, because the Oracle
 driver and the Kafka consumer both hold buffers outside the heap — and the failure this service
 must not have is being OOM-killed mid-transaction on a cap set too tight.
 
@@ -50,7 +60,11 @@ harder to notice than one that does not come up.
 repository. The host key is pinned from [`known_hosts.pub`](known_hosts.pub) composed with the
 secret address, rather than trusting whatever answers on it.
 
-The deploy account needs `sudo` to install the unit file and manage the service.
+`DEPLOY_SSH_KEY` is a key of CI's own, not the operator's, and on the box it is pinned to a forced
+command: it can ask for a release and can do nothing else — no shell, no file copy, no port
+forward. The account behind it may run exactly one command as root, `systemctl restart
+trading-system`. Both halves of that arrangement are host configuration, kept and applied outside
+this repository.
 
 ## Rollback
 
