@@ -85,14 +85,27 @@ class ReadinessTest {
     }
 
     @Test
-    fun `a dead consumer thread reports its fatal error with the whole cause chain`() {
+    fun `a dead consumer thread reports the whole cause chain by type and vendor code`() {
         healthyConsumer()
-        consumer.failed(IllegalStateException("retries exhausted", java.sql.SQLException("ORA-01653: unable to extend")))
+        consumer.failed(IllegalStateException("retries exhausted", java.sql.SQLException("unable to extend", "53100", 1653)))
         val probe = readiness().probe()
         assertFalse(probe.ready)
-        assertTrue(probe.json.contains("retries exhausted"), probe.json)
-        assertTrue(probe.json.contains("ORA-01653"), "the wrapper without the root cause tells an operator nothing")
+        assertTrue(probe.json.contains("java.lang.IllegalStateException"), probe.json)
+        assertTrue(probe.json.contains("java.sql.SQLException[1653]"), "the wrapper without the root cause tells an operator nothing")
         assertTrue(probe.json.contains(""""threadAlive":false"""), probe.json)
+    }
+
+    @Test
+    fun `the fatal field carries no exception message, because readyz is public`() {
+        healthyConsumer()
+        val descriptor = "IO Error: (HOST=adb.uk-london-1.oraclecloud.com)(SERVICE_NAME=trading_tp)(USER=TRADING)"
+        consumer.failed(java.sql.SQLRecoverableException(descriptor, "08006", 17002))
+        val probe = readiness().probe()
+        assertFalse(probe.ready)
+        assertTrue(probe.json.contains("java.sql.SQLRecoverableException[17002]"), probe.json)
+        assertFalse(probe.json.contains("HOST="), "an unauthenticated probe must not publish a connection descriptor")
+        assertFalse(probe.json.contains("SERVICE_NAME"), probe.json)
+        assertFalse(probe.json.contains("TRADING"), probe.json)
     }
 
     @Test

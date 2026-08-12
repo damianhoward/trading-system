@@ -1,5 +1,6 @@
 package com.damianhoward.tradingsystem.consume
 
+import java.sql.SQLException
 import java.time.Clock
 
 /**
@@ -44,13 +45,23 @@ class ConsumerHealth(
     }
 
     fun failed(error: Throwable) {
-        // The whole cause chain: "retries exhausted" without the ORA code underneath tells an
-        // operator nothing — the probe must name the root cause, not the wrapper.
+        // The whole cause chain, because "retries exhausted" without what failed underneath tells
+        // an operator nothing — the probe must name the root cause, not the wrapper.
+        //
+        // Types and vendor codes only. This field is served by /readyz, which is public and
+        // unauthenticated, and an exception message is free text this process does not author: a
+        // JDBC failure carries the connection descriptor — host, port, service name — in its
+        // message, and a parse failure carries the input. The type chain plus the SQL error code
+        // still separates "database unreachable" from "constraint violated" from "retries
+        // exhausted", which is what the probe is read for. Whoever needs the message has the
+        // journal: every caller of this hands the same error to onFatal, which prints it.
         fatal =
             generateSequence(error) { it.cause }
-                .joinToString(" <- ") { "${it.javaClass.name}: ${it.message}" }
+                .joinToString(" <- ") { it.javaClass.name + vendorCode(it) }
         threadAlive = false
     }
+
+    private fun vendorCode(error: Throwable): String = if (error is SQLException && error.errorCode != 0) "[${error.errorCode}]" else ""
 
     /** Milliseconds since the last completed poll, or null before the first one. */
     fun pollAgeMillis(): Long? = if (lastPollMillis == 0L) null else clock.millis() - lastPollMillis

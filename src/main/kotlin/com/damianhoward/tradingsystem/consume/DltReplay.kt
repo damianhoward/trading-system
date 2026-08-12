@@ -24,10 +24,11 @@ import java.util.concurrent.TimeUnit
  * still-malformed records where they are.
  *
  * Every send is confirmed before the next record is read, and each outcome is logged with its
- * DLT coordinates; a failed send aborts the run. A replayed copy lands at new stream
- * coordinates, so the ledger cannot recognise a second copy as a duplicate — running the tool
- * twice applies the same fill twice. The runbook treats replay as a deliberate, once-per-incident
- * operation.
+ * DLT coordinates; a failed send aborts the run. A replayed copy lands at new stream coordinates,
+ * so the ledger's coordinate key cannot recognise it as a duplicate; the `exec_id` unique index
+ * can, and does for every record carrying one. A record whose payload has no `execId` — the
+ * producer made it optional — still applies twice if the tool is run twice. The runbook therefore
+ * treats replay as a deliberate, once-per-incident operation.
  */
 class DltReplay(
     private val consumer: Consumer<String, String>,

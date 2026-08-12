@@ -52,10 +52,14 @@ class FillConsumerTest {
         fillConsumer.start()
         try {
             assertTrue(fatal.await(5, TimeUnit.SECONDS), "onFatal must fire")
-            assertEquals("broker said no", seen?.message)
+            assertEquals("broker said no", seen?.message, "the operator path keeps the message")
             assertFalse(fillConsumer.health.threadAlive)
             assertNotNull(fillConsumer.health.fatal)
-            assertTrue(fillConsumer.health.fatal!!.contains("broker said no"))
+            assertTrue(fillConsumer.health.fatal!!.contains("java.lang.IllegalStateException"))
+            assertFalse(
+                fillConsumer.health.fatal!!.contains("broker said no"),
+                "the health field is published by /readyz, which is unauthenticated",
+            )
         } finally {
             fillConsumer.close()
         }
