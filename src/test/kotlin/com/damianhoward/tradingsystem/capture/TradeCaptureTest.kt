@@ -1,6 +1,5 @@
 package com.damianhoward.tradingsystem.capture
 
-import com.sun.net.httpserver.HttpExchange
 import com.damianhoward.orderbook.model.Side
 import com.damianhoward.riskengine.report.RiskReportAssembler
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
@@ -17,6 +16,7 @@ import com.damianhoward.tradingsystem.position.SymbolTotals
 import com.damianhoward.tradingsystem.pricing.MarketAssumptions
 import com.damianhoward.tradingsystem.pricing.RiskGateway
 import com.damianhoward.tradingsystem.web.Broadcaster
+import com.sun.net.httpserver.HttpExchange
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull

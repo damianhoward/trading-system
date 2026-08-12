@@ -1,9 +1,9 @@
 package com.damianhoward.tradingsystem.web
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
 import com.damianhoward.tradingsystem.capture.TradeCapture
 import com.damianhoward.tradingsystem.health.Readiness
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpServer
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
