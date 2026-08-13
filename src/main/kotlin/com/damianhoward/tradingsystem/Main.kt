@@ -15,6 +15,8 @@ import com.damianhoward.tradingsystem.limits.RiskLimits
 import com.damianhoward.tradingsystem.position.JdbcPositionStore
 import com.damianhoward.tradingsystem.position.PositionBook
 import com.damianhoward.tradingsystem.position.ReconciliationChecker
+import com.damianhoward.tradingsystem.position.View
+import com.damianhoward.tradingsystem.position.ViewTotals
 import com.damianhoward.tradingsystem.pricing.MarketAssumptions
 import com.damianhoward.tradingsystem.pricing.RiskGateway
 import com.damianhoward.tradingsystem.web.DashboardServer
@@ -101,7 +103,23 @@ fun main(args: Array<String>) {
     // One pass before the server starts, so the probe is never answering from an empty result:
     // an unpopulated check and a failing one are the same 503, and starting into it would make
     // every deploy look like a divergence for the first interval.
-    val reconciler = ReconciliationChecker(store::symbolTotals).apply { run() }
+    //
+    // Both in-memory views are warmed from the same ledger this pass reads, so they start at its
+    // high-water offset and the first verdict is a judgement rather than an inconclusive one.
+    val reconciler =
+        ReconciliationChecker(
+            ledgerSnapshot = { store.ledgerSnapshot(config.fillsTopic) },
+            inMemoryViews =
+                mapOf(
+                    View.POSITION_BOOK to {
+                        ViewTotals(capture.progress?.offset, book.all().associate { it.symbol to it.quantity })
+                    },
+                    View.LIMITS to {
+                        val report = limits.report()
+                        ViewTotals(report.progress?.offset, report.symbols.associate { it.symbol to it.netQuantity })
+                    },
+                ),
+        ).apply { run() }
     val reconciliations =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "position-reconciler").apply { isDaemon = true }

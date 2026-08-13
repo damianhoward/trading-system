@@ -13,11 +13,22 @@ import java.time.Duration
  *
  * The result therefore has an age, and the age is part of the signal rather than metadata: a
  * checker that has stopped running leaves a passing result behind it, which reads exactly like a
- * book that reconciles. [Readiness] fails on staleness for the same reason it fails on a
- * consumer's poll age — "it last succeeded" is not the same claim as "it is succeeding".
+ * book that reconciles. [com.damianhoward.tradingsystem.health.Readiness] fails on staleness for
+ * the same reason it fails on a consumer's poll age — "it last succeeded" is not the same claim
+ * as "it is succeeding".
+ *
+ * One ledger read serves every view, so the three verdicts in a pass are all taken against the
+ * same instant of the ledger. Reading it per view would let them disagree about what the ledger
+ * held, which is the same defect the single-statement read exists to prevent, one level up.
+ *
+ * [inMemoryViews] is read after the ledger, not before. A view that moves in between reports an
+ * offset ahead of the snapshot and is judged inconclusive rather than divergent — the ordering
+ * makes the race show up as "cannot say", which is recoverable, instead of as a false divergence,
+ * which is not.
  */
 class ReconciliationChecker(
-    private val symbolTotals: () -> List<SymbolTotals>,
+    private val ledgerSnapshot: () -> LedgerSnapshot,
+    private val inMemoryViews: Map<View, () -> ViewTotals> = emptyMap(),
     private val clock: Clock = Clock.systemUTC(),
 ) {
     @Volatile
@@ -40,10 +51,11 @@ class ReconciliationChecker(
      */
     fun run() {
         try {
-            val totals = symbolTotals()
-            latest = Reconciliation.of(totals, clock.millis())
+            val ledger = ledgerSnapshot()
+            val views = inMemoryViews.mapValues { (_, totals) -> totals() }
+            latest = Reconciliation.of(ledger, views, clock.millis())
         } catch (e: Exception) {
-            System.err.println("position reconciliation failed:")
+            System.err.println("view reconciliation failed:")
             e.printStackTrace()
         }
     }

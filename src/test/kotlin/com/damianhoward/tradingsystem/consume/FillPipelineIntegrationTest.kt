@@ -7,6 +7,7 @@ import com.damianhoward.tradingsystem.limits.LimitsChecker
 import com.damianhoward.tradingsystem.limits.LimitsReport
 import com.damianhoward.tradingsystem.limits.RiskLimits
 import com.damianhoward.tradingsystem.position.Ledger
+import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Position
 import com.damianhoward.tradingsystem.position.PositionBook
 import com.damianhoward.tradingsystem.position.PositionStore
@@ -74,7 +75,11 @@ class FillPipelineIntegrationTest {
 
         override fun loadLedger(topic: String): Ledger = Ledger(applied.map { it.first }, emptyMap())
 
-        override fun symbolTotals(): List<SymbolTotals> = positions.values.map { SymbolTotals(it.symbol, it.quantity, it.quantity) }
+        override fun ledgerSnapshot(topic: String): LedgerSnapshot =
+            LedgerSnapshot(
+                highWaterOffset = applied.map { it.second.offset }.maxOrNull(),
+                totals = positions.values.map { SymbolTotals(it.symbol, it.quantity, it.quantity) },
+            )
 
         override fun ping(): Boolean = true
     }

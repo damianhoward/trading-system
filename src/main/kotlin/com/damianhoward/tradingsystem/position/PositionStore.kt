@@ -42,11 +42,12 @@ interface PositionStore {
 
     /**
      * Every symbol known to either table, with its signed ledger sum beside its stored position,
-     * for the conservation check in [Reconciliation]. Symbols present in only one of the two are
+     * plus the ledger's high-water offset for [topic] — the whole input to the conservation check
+     * in [Reconciliation], read at one instant. Symbols present in only one of the two are
      * included with zero on the missing side: a position with no fills behind it and a ledger the
      * position never absorbed are both divergences, and omitting either would hide one.
      */
-    fun symbolTotals(): List<SymbolTotals>
+    fun ledgerSnapshot(topic: String): LedgerSnapshot
 
     /** True when the database answers a trivial query — the readiness probe's connectivity check. */
     fun ping(): Boolean
@@ -182,21 +183,31 @@ class JdbcPositionStore(
             }
         }
 
-    override fun symbolTotals(): List<SymbolTotals> =
+    override fun ledgerSnapshot(topic: String): LedgerSnapshot =
         connect().use { connection ->
-            connection.prepareStatement(SELECT_SYMBOL_TOTALS).use { statement ->
+            connection.prepareStatement(SELECT_LEDGER_SNAPSHOT).use { statement ->
+                statement.setString(1, topic)
                 statement.executeQuery().use { rows ->
-                    buildList {
-                        while (rows.next()) {
-                            add(
-                                SymbolTotals(
-                                    symbol = rows.getString("symbol"),
-                                    ledgerQuantity = rows.getLong("ledger_quantity"),
-                                    positionQuantity = rows.getLong("position_quantity"),
-                                ),
-                            )
+                    var highWater: Long? = null
+                    val totals =
+                        buildList {
+                            while (rows.next()) {
+                                // Repeated on every row by the scalar subquery, and identical on
+                                // all of them because one statement sees one SCN. Reading it here
+                                // rather than in a second query is the point: the offset and the
+                                // quantities it certifies have to describe the same instant.
+                                val offset = rows.getLong("high_water_offset")
+                                if (!rows.wasNull()) highWater = offset
+                                add(
+                                    SymbolTotals(
+                                        symbol = rows.getString("symbol"),
+                                        ledgerQuantity = rows.getLong("ledger_quantity"),
+                                        positionQuantity = rows.getLong("position_quantity"),
+                                    ),
+                                )
+                            }
                         }
-                    }
+                    LedgerSnapshot(highWater, totals)
                 }
             }
         }
@@ -260,10 +271,17 @@ class JdbcPositionStore(
         //
         // FULL OUTER JOIN so a symbol in only one table still appears, with zero on the side that
         // lacks it — those are the two most interesting divergences, not edge cases to drop.
-        private const val SELECT_SYMBOL_TOTALS =
+        //
+        // The high-water offset IS topic-scoped, unlike the sums. It exists to say how much stream
+        // the quantities above account for, and the in-memory views it is compared against each
+        // track one topic; a max across topics would not correspond to any consumer's position.
+        // It rides along as a scalar subquery rather than a second query so it shares the SCN —
+        // an offset read a moment later would certify quantities it never saw.
+        private const val SELECT_LEDGER_SNAPSHOT =
             "SELECT COALESCE(l.symbol, p.symbol) AS symbol, " +
                 "COALESCE(l.ledger_quantity, 0) AS ledger_quantity, " +
-                "COALESCE(p.quantity, 0) AS position_quantity " +
+                "COALESCE(p.quantity, 0) AS position_quantity, " +
+                "(SELECT MAX(source_offset) FROM fills WHERE source_topic = ?) AS high_water_offset " +
                 "FROM (SELECT symbol, SUM(signed_size) AS ledger_quantity FROM fills GROUP BY symbol) l " +
                 "FULL OUTER JOIN positions p ON p.symbol = l.symbol " +
                 "ORDER BY 1"

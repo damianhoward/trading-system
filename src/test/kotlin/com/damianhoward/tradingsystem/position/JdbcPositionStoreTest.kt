@@ -6,6 +6,7 @@ import com.damianhoward.tradingsystem.consume.FillSource
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -27,6 +28,8 @@ import java.sql.SQLException
 @Testcontainers(disabledWithoutDocker = true)
 class JdbcPositionStoreTest {
     companion object {
+        const val TOPIC = "orderbook.fills"
+
         // Three minutes, not the default: on a loaded workstation the database's cold start
         // brushes the shorter window and fails the suite before a single test runs.
         @Container
@@ -57,7 +60,13 @@ class JdbcPositionStoreTest {
         ts: Long = 1000,
     ) = Fill(symbol, BigDecimal(price), size, 11, 22, side, ts)
 
-    private fun source(offset: Long) = FillSource("orderbook.fills", 0, offset)
+    private fun source(offset: Long) = FillSource(TOPIC, 0, offset)
+
+    private fun reconcile() = Reconciliation.of(store.ledgerSnapshot(TOPIC), emptyMap(), checkedAtMillis = 1)
+
+    private fun verdict(snapshot: LedgerSnapshot) = verdict(Reconciliation.of(snapshot, emptyMap(), 1))
+
+    private fun verdict(result: Reconciliation) = result.verdict(View.POSITIONS)!!
 
     @Test
     fun `an empty table loads an empty book`() {
@@ -228,11 +237,12 @@ class JdbcPositionStoreTest {
         store.record(fill(symbol = "SIM", side = Side.OFFER, size = 2, ts = 2000), source(2))
         store.record(fill(symbol = "ABC", size = 7, ts = 3000), source(3))
 
-        val totals = store.symbolTotals()
+        val snapshot = store.ledgerSnapshot(TOPIC)
 
-        assertEquals(listOf("ABC", "SIM"), totals.map { it.symbol })
-        assertEquals(Reconciliation.of(totals, 1).divergences, emptyList<Divergence>())
-        assertEquals(SymbolTotals("SIM", ledgerQuantity = 3, positionQuantity = 3), totals[1])
+        assertEquals(listOf("ABC", "SIM"), snapshot.totals.map { it.symbol })
+        assertEquals(emptyList<Divergence>(), verdict(snapshot).divergences)
+        assertEquals(SymbolTotals("SIM", ledgerQuantity = 3, positionQuantity = 3), snapshot.totals[1])
+        assertEquals(3, snapshot.highWaterOffset, "the offset the quantities account for, from the same read")
     }
 
     @Test
@@ -243,10 +253,10 @@ class JdbcPositionStoreTest {
         store.record(fill(symbol = "SIM", size = 5), source(1))
         execute("UPDATE positions SET quantity = 9 WHERE symbol = 'SIM'")
 
-        val result = Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1)
+        val result = reconcile()
 
         assertFalse(result.agrees)
-        assertEquals(Divergence("SIM", ledgerQuantity = 5, positionQuantity = 9), result.divergences.single())
+        assertEquals(Divergence("SIM", ledgerQuantity = 5, viewQuantity = 9), verdict(result).divergences.single())
     }
 
     @Test
@@ -256,9 +266,9 @@ class JdbcPositionStoreTest {
         store.record(fill(symbol = "SIM", size = 5), source(1))
         execute("DELETE FROM fills WHERE symbol = 'SIM'")
 
-        val result = Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1)
+        val result = reconcile()
 
-        assertEquals(Divergence("SIM", ledgerQuantity = 0, positionQuantity = 5), result.divergences.single())
+        assertEquals(Divergence("SIM", ledgerQuantity = 0, viewQuantity = 5), verdict(result).divergences.single())
     }
 
     @Test
@@ -266,15 +276,16 @@ class JdbcPositionStoreTest {
         store.record(fill(symbol = "SIM", size = 5), source(1))
         execute("DELETE FROM positions WHERE symbol = 'SIM'")
 
-        val result = Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1)
+        val result = reconcile()
 
-        assertEquals(Divergence("SIM", ledgerQuantity = 5, positionQuantity = 0), result.divergences.single())
+        assertEquals(Divergence("SIM", ledgerQuantity = 5, viewQuantity = 0), verdict(result).divergences.single())
     }
 
     @Test
     fun `an empty database reconciles rather than erroring`() {
-        assertTrue(store.symbolTotals().isEmpty())
-        assertTrue(Reconciliation.of(store.symbolTotals(), checkedAtMillis = 1).agrees)
+        assertTrue(store.ledgerSnapshot(TOPIC).totals.isEmpty())
+        assertNull(store.ledgerSnapshot(TOPIC).highWaterOffset, "no fills, so no offset to certify")
+        assertTrue(reconcile().agrees)
     }
 
     @Test
@@ -284,9 +295,12 @@ class JdbcPositionStoreTest {
         store.record(fill(symbol = "SIM", size = 5), source(1))
         store.record(fill(symbol = "SIM", size = 3, ts = 2000), FillSource("orderbook.fills.replayed", 0, 1))
 
-        val totals = store.symbolTotals().single()
+        val snapshot = store.ledgerSnapshot(TOPIC)
 
-        assertEquals(SymbolTotals("SIM", ledgerQuantity = 8, positionQuantity = 8), totals)
+        assertEquals(SymbolTotals("SIM", ledgerQuantity = 8, positionQuantity = 8), snapshot.totals.single())
+        // The sum spans topics; the offset does not. It says how far along orderbook.fills the
+        // in-memory views must be to be comparable, and a max across topics answers no such question.
+        assertEquals(1, snapshot.highWaterOffset)
     }
 
     /** A connection that fails exactly between the ledger insert and the position merge. */

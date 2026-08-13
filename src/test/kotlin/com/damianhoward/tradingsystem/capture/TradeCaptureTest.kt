@@ -8,6 +8,7 @@ import com.damianhoward.tradingsystem.consume.FillSource
 import com.damianhoward.tradingsystem.limits.LimitsReport
 import com.damianhoward.tradingsystem.limits.RiskLimits
 import com.damianhoward.tradingsystem.position.Ledger
+import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Position
 import com.damianhoward.tradingsystem.position.PositionBook
 import com.damianhoward.tradingsystem.position.PositionStore
@@ -60,14 +61,18 @@ class TradeCaptureTest {
         // Derived from both maps rather than asserted equal, so this double can express a
         // divergence at all — a stand-in that reports agreement by construction could never fail
         // the check it stands in for.
-        override fun symbolTotals(): List<SymbolTotals> =
-            (ledger.values.map { it.symbol } + positions.keys).distinct().sorted().map { symbol ->
-                SymbolTotals(
-                    symbol = symbol,
-                    ledgerQuantity = ledger.values.filter { it.symbol == symbol }.sumOf { it.signedSize },
-                    positionQuantity = positions[symbol]?.quantity ?: 0L,
-                )
-            }
+        override fun ledgerSnapshot(topic: String): LedgerSnapshot =
+            LedgerSnapshot(
+                highWaterOffset = ledger.keys.filter { it.topic == topic }.maxOfOrNull { it.offset },
+                totals =
+                    (ledger.values.map { it.symbol } + positions.keys).distinct().sorted().map { symbol ->
+                        SymbolTotals(
+                            symbol = symbol,
+                            ledgerQuantity = ledger.values.filter { it.symbol == symbol }.sumOf { it.signedSize },
+                            positionQuantity = positions[symbol]?.quantity ?: 0L,
+                        )
+                    },
+            )
 
         override fun ping(): Boolean = true
     }
