@@ -10,6 +10,7 @@ import com.damianhoward.tradingsystem.health.Readiness
 import com.damianhoward.tradingsystem.limits.LimitsReport
 import com.damianhoward.tradingsystem.limits.RiskLimits
 import com.damianhoward.tradingsystem.position.Ledger
+import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Position
 import com.damianhoward.tradingsystem.position.PositionBook
 import com.damianhoward.tradingsystem.position.PositionStore
@@ -56,7 +57,8 @@ class DashboardServerTest {
 
         override fun loadLedger(topic: String): Ledger = Ledger(emptyList(), emptyMap())
 
-        override fun symbolTotals(): List<SymbolTotals> = positions.values.map { SymbolTotals(it.symbol, it.quantity, it.quantity) }
+        override fun ledgerSnapshot(topic: String): LedgerSnapshot =
+            LedgerSnapshot(null, positions.values.map { SymbolTotals(it.symbol, it.quantity, it.quantity) })
 
         override fun ping(): Boolean = true
     }
@@ -79,7 +81,7 @@ class DashboardServerTest {
             deadLettersFailed = { 0 },
             positionsView = { capture.progress },
             limitsView = { null },
-            reconciliation = { Reconciliation.of(emptyList(), System.currentTimeMillis()) },
+            reconciliation = { Reconciliation.of(LedgerSnapshot(null, emptyList()), emptyMap(), System.currentTimeMillis()) },
         )
     private val server = DashboardServer(capture, broadcaster, WebAssets.load(), port = 0, readiness = readiness)
     private val client = HttpClient.newHttpClient()

@@ -3,10 +3,13 @@ package com.damianhoward.tradingsystem.health
 import com.damianhoward.tradingsystem.consume.ConsumerHealth
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
 import com.damianhoward.tradingsystem.position.Divergence
+import com.damianhoward.tradingsystem.position.Inconclusive
 import com.damianhoward.tradingsystem.position.Reconciliation
 import com.damianhoward.tradingsystem.position.ReconciliationChecker
+import com.damianhoward.tradingsystem.position.View
 import java.time.Clock
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The service's operational truth, aggregated for `/readyz`: every consumer thread alive,
@@ -22,12 +25,17 @@ import java.time.Duration
  * send already fails fast at the moment it happens).
  *
  * Reconciliation asks the question coherence cannot. Equal offsets prove the two views have read
- * the same amount of stream, not that either holds the right number; a position that drifted from
- * its ledger sits at the correct offset with the wrong quantity. So the probe also fails when the
- * book stops agreeing with the fills it derives from, or when the check establishing that has gone
- * stale — no grace window, because unlike the two consumers there is no race that makes a
- * divergence briefly legitimate. It is read at one instant from one statement, so it is either
- * true or it is a defect.
+ * the same amount of stream, not that either holds the right number; a projection that drifted
+ * from its ledger sits at the correct offset with the wrong quantity. So the probe also fails when
+ * any of the three derived views stops agreeing with the fills it comes from, or when the check
+ * establishing that has gone stale.
+ *
+ * A divergence gets no grace window. The `positions` table is read at one instant from one
+ * statement, so it is either true or it is a defect, and an in-memory view is only ever judged at
+ * a matching stream offset — there is no race left that makes a divergence briefly legitimate.
+ * Being unable to judge a view is the separate case, and it does get a window: an in-memory
+ * projection mid-flight when a pass runs is ordinary, one that can never be caught up with is a
+ * check that has quietly stopped asserting anything. See [inconclusiveGrace].
  */
 class Readiness(
     private val consumers: List<ConsumerHealth>,
@@ -40,6 +48,7 @@ class Readiness(
     private val maxPollAge: Duration = MAX_POLL_AGE,
     private val coherenceGrace: Duration = COHERENCE_GRACE,
     private val maxReconciliationAge: Duration = ReconciliationChecker.MAX_AGE,
+    private val inconclusiveGrace: Duration = INCONCLUSIVE_GRACE,
     private val clock: Clock = Clock.systemUTC(),
 ) {
     data class Probe(
@@ -49,6 +58,9 @@ class Readiness(
 
     @Volatile
     private var incoherentSinceMillis: Long? = null
+
+    /** When each view last became unjudgeable, cleared the moment it is judged again. */
+    private val inconclusiveSinceMillis = ConcurrentHashMap<View, Long>()
 
     /**
      * One evaluation of everything above, which both `/readyz` and `/metrics` render.
@@ -87,8 +99,17 @@ class Readiness(
     private data class LedgerState(
         val ok: Boolean,
         val ageMillis: Long?,
-        val symbolsChecked: Int?,
+        val fresh: Boolean,
+        val views: List<ViewLedgerState>,
+    )
+
+    private data class ViewLedgerState(
+        val view: View,
+        val ok: Boolean,
+        val symbolsChecked: Int,
         val divergences: List<Divergence>,
+        val inconclusive: Inconclusive?,
+        val inconclusiveForMillis: Long?,
     )
 
     private fun snapshot(): Snapshot {
@@ -118,30 +139,66 @@ class Readiness(
     }
 
     /**
-     * The conservation check's standing verdict. Divergences are named individually with both
-     * quantities: an operator seeing 503 needs the symbol and the size of the gap, and there is
-     * nothing secret in either — they are the same numbers the public dashboard already serves.
+     * The conservation check's standing verdict, per derived view. Divergences are named
+     * individually with both quantities: an operator seeing 503 needs the view, the symbol and the
+     * size of the gap, and there is nothing secret in any of them — they are the same numbers the
+     * public dashboard already serves.
      */
     private fun ledgerState(): LedgerState {
         val latest = reconciliation()
         val ageMillis = latest?.let { clock.millis() - it.checkedAtMillis }
         val fresh = ageMillis != null && ageMillis <= maxReconciliationAge.toMillis()
+        val views = latest?.verdicts.orEmpty().map(::viewLedgerState)
         return LedgerState(
-            ok = fresh && latest!!.agrees,
+            ok = fresh && views.all { it.ok },
             ageMillis = ageMillis,
-            symbolsChecked = latest?.symbolsChecked,
-            divergences = latest?.divergences.orEmpty(),
+            fresh = fresh,
+            views = views,
+        )
+    }
+
+    /**
+     * One view's contribution. An inconclusive verdict is not a pass and not a failure: it starts
+     * a clock, and only outlasting [inconclusiveGrace] makes the probe unready. Judging resets it,
+     * so an ordinary mid-flight view never accumulates.
+     */
+    private fun viewLedgerState(verdict: com.damianhoward.tradingsystem.position.ViewVerdict): ViewLedgerState {
+        val inconclusiveFor =
+            if (verdict.inconclusive == null) {
+                inconclusiveSinceMillis.remove(verdict.view)
+                null
+            } else {
+                val since = inconclusiveSinceMillis.computeIfAbsent(verdict.view) { clock.millis() }
+                clock.millis() - since
+            }
+        return ViewLedgerState(
+            view = verdict.view,
+            ok = verdict.divergences.isEmpty() && (inconclusiveFor == null || inconclusiveFor <= inconclusiveGrace.toMillis()),
+            symbolsChecked = verdict.symbolsChecked,
+            divergences = verdict.divergences,
+            inconclusive = verdict.inconclusive,
+            inconclusiveForMillis = inconclusiveFor,
         )
     }
 
     private fun ledgerJson(state: LedgerState): String {
+        val views = state.views.joinToString(",") { """${quote(it.view.label)}:${viewLedgerJson(it)}""" }
+        return """{"ok":${state.ok},"checkedAgeMillis":${state.ageMillis ?: "null"},"views":{$views}}"""
+    }
+
+    private fun viewLedgerJson(state: ViewLedgerState): String {
         val divergences =
             state.divergences.joinToString(",") {
                 """{"symbol":${quote(it.symbol)},"ledgerQuantity":${it.ledgerQuantity},""" +
-                    """"positionQuantity":${it.positionQuantity},"difference":${it.difference}}"""
+                    """"viewQuantity":${it.viewQuantity},"difference":${it.difference}}"""
             }
-        return """{"ok":${state.ok},"checkedAgeMillis":${state.ageMillis ?: "null"},""" +
-            """"symbolsChecked":${state.symbolsChecked ?: "null"},"divergences":[$divergences]}"""
+        val inconclusive =
+            state.inconclusive?.let {
+                """{"viewOffset":${it.viewOffset ?: "null"},"ledgerOffset":${it.ledgerOffset ?: "null"},""" +
+                    """"forMillis":${state.inconclusiveForMillis ?: "null"}}"""
+            } ?: "null"
+        return """{"ok":${state.ok},"symbolsChecked":${state.symbolsChecked},""" +
+            """"divergences":[$divergences],"inconclusive":$inconclusive}"""
     }
 
     private fun viewsState(): ViewsState {
@@ -272,17 +329,29 @@ class Readiness(
             "Whether the projections have applied the same amount of stream.",
             now.views.coherent.toInt(),
         )
-        gauge(
+        // Judged views only. A view the pass could not judge publishes no verdict rather than a
+        // zero: pinned at 0 it reads as a standing divergence, pinned at 1 as an assertion nothing
+        // actually made. The inconclusive gauge below is always present, so absence here is
+        // readable rather than ambiguous — the same rule that keeps the egress counters absent
+        // until a producer is wired.
+        val judged = now.ledger.views.filter { it.inconclusive == null }
+        emit(
             "trading_system_ledger_agrees",
-            "Whether every position equals the signed sum of its ledger fills.",
-            now.ledger.divergences
-                .isEmpty()
-                .toInt(),
+            "Whether a derived view equals the signed sum of the ledger fills behind it.",
+            "gauge",
+            judged.map { """{view="${it.view.label}"}""" to it.divergences.isEmpty().toInt() },
         )
-        gauge(
+        emit(
             "trading_system_ledger_divergent_symbols",
-            "Symbols whose stored position disagrees with the fills it derives from.",
-            now.ledger.divergences.size,
+            "Symbols whose view quantity disagrees with the fills it derives from.",
+            "gauge",
+            judged.map { """{view="${it.view.label}"}""" to it.divergences.size },
+        )
+        emit(
+            "trading_system_ledger_check_inconclusive",
+            "Whether a view sat at a different stream offset than the ledger and could not be judged.",
+            "gauge",
+            now.ledger.views.map { """{view="${it.view.label}"}""" to (it.inconclusive != null).toInt() },
         )
         now.ledger.ageMillis?.let {
             gauge(
@@ -318,5 +387,15 @@ class Readiness(
     companion object {
         private val MAX_POLL_AGE: Duration = Duration.ofSeconds(30)
         private val COHERENCE_GRACE: Duration = Duration.ofSeconds(30)
+
+        /**
+         * Three reconciliation passes. Measured in passes rather than seconds because a pass is
+         * what samples a view: anything shorter than [ReconciliationChecker.INTERVAL] would fail
+         * the probe on a single view that happened to be mid-flight, which is the ordinary case
+         * this window exists to tolerate. Fills arrive at the live site's human rate and a view
+         * realigns within a second, so three consecutive passes unable to judge one is not a race
+         * — it is a view that has stopped tracking the ledger.
+         */
+        private val INCONCLUSIVE_GRACE: Duration = ReconciliationChecker.INTERVAL.multipliedBy(3)
     }
 }

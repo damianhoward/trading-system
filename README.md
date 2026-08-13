@@ -28,8 +28,8 @@ orderbook.fills (Kafka) ──┬─► FillConsumer (seek from ledger) ──�
 Matching and pricing are versioned library dependencies, not code in this repo:
 
 ```groovy
-implementation 'com.github.damianhoward:orderbook:v1.0.0'
-implementation 'com.github.damianhoward:risk-engine:v1.0.0'
+implementation 'com.github.damianhoward:orderbook:v3.0.0'
+implementation 'com.github.damianhoward:risk-engine:v2.0.0'
 ```
 
 ## The book of record: idempotent fill application
@@ -157,31 +157,49 @@ Two endpoints report health at different depths:
 - `/readyz` — readiness: every consumer thread alive, assigned, and recently polling; the
   database answering; the positions and limits views at the same stream offset (independent
   consumers may sit apart mid-burst, so divergence gets a 30 s grace window — offsets still
-  apart after that mean a projection is stuck); the book reconciling against the ledger it is
-  derived from; dead-letter publish/failure counters. Returns 503 with the failing component
+  apart after that mean a projection is stuck); every derived view reconciling against the ledger
+  it comes from; dead-letter publish/failure counters. Returns 503 with the failing component
   named when the pipeline is broken or the projections disagree, whatever the web process says.
   Deploys gate on this, so a deploy whose consumers cannot attach — or whose views cannot
   converge — fails instead of going green.
 
 ### Reconciliation
 
-Equal offsets prove the two views have read the same amount of stream. They do not prove either
-holds the right number: a position that has drifted from its fills sits at the correct offset
-with the wrong quantity, and nothing in the request path would notice, because the dashboard,
-the limits view and the risk report all read `positions` and would agree with each other while
-disagreeing with the record of what actually traded.
+Equal offsets prove two views have read the same amount of stream. They do not prove either holds
+the right number: a projection that has drifted from its fills sits at the correct offset with the
+wrong quantity, and nothing in the request path would notice.
 
-So a background pass asserts the conservation property — **every position equals the signed sum
-of its ledger fills** — every minute, and `/readyz` fails when it does not hold, naming each
-symbol with both quantities and the gap between them. The write path maintains that invariant by
-construction, inserting the fill and moving the position in one transaction, which is precisely
-why it is worth checking: the ways it can still break are a restore to the wrong point, a manual
-correction, a migration that touches one table, or a later change to the merge.
+So a background pass asserts the conservation property — **every derived view equals the signed
+sum of the ledger fills behind it** — every minute, and `/readyz` fails when it does not hold,
+naming the view, each symbol, both quantities and the gap between them.
 
-Both sides are read in one SQL statement, so they describe the same instant and a fill
-committing mid-check cannot manufacture a divergence that was never real. The probe also fails
-when the check itself goes stale — a checker that has stopped leaves a passing result behind it,
-which reads exactly like a book that reconciles.
+There are three such views, and they fail differently:
+
+| View            | What it is                                     | How a drift shows                                                                       |
+| --------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `positions`     | the table, moved in the fill's own transaction | a bad restore, a manual correction, a migration, a bad merge                            |
+| `position_book` | the in-memory mirror                           | wrong valuation, Greeks and VaR — the risk report is priced from it, not from the table |
+| `limits`        | the limits consumer's independent exposure map | breach events against exposures nothing else in the service reads                       |
+
+The write path maintains `positions` by construction, inserting the fill and moving the position
+in one transaction, which is precisely why it is worth checking. `limits` is the opposite case:
+it never reads the position book, and that independence — the point of running it in its own
+consumer group — is also why nothing else would notice it disagreeing.
+
+The table is read alongside the ledger sum in one SQL statement, so they describe the same
+instant and a fill committing mid-check cannot manufacture a divergence that was never real. An
+in-memory view cannot share that instant, so it gets the equivalent guarantee a different way:
+the same statement returns the ledger's high-water offset, and a view is judged only when it sits
+there. A view at a different offset is reported **inconclusive** rather than divergent — comparing
+one mid-flight would flag a divergence for every fill in transit, and a check that cries wolf gets
+turned off.
+
+Inconclusive is not a free pass. A view that can never be judged asserts nothing, so the probe
+fails once one has been continuously unjudgeable for three passes. The budget is counted in passes
+rather than seconds because a pass is what samples the view.
+
+The probe also fails when the check itself goes stale — a checker that has stopped leaves a
+passing result behind it, which reads exactly like a book that reconciles.
 
 The snapshot itself carries a `sync` block — each consumer path's last stream offset and fill
 timestamp, whether the two views are coherent, how many replays the ledger dropped, and how many
