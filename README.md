@@ -28,7 +28,7 @@ orderbook.fills (Kafka) ──┬─► FillConsumer (seek from ledger) ──�
 Matching and pricing are versioned library dependencies, not code in this repo:
 
 ```groovy
-implementation 'com.github.damianhoward:orderbook:v3.0.0'
+implementation 'com.github.damianhoward:orderbook:v3.0.1'
 implementation 'com.github.damianhoward:risk-engine:v2.0.0'
 ```
 
