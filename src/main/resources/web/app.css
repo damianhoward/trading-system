@@ -82,6 +82,10 @@ a:hover {
   display: flex;
   align-items: baseline;
   gap: 10px;
+  /* An h1, so the page has one. Every visual property it would otherwise inherit from the
+     user-agent stylesheet is set here — margin included, which is the one that would move the
+     topbar if it were left to the default 0.67em. */
+  margin: 0;
   font-weight: 700;
   letter-spacing: 0.06em;
   font-size: 14px;
