@@ -112,6 +112,31 @@ class ReadinessTest {
     }
 
     @Test
+    fun `metrics carry heap against its ceiling, which is what sizes the ceiling`() {
+        // The ceiling here was set by guess at 128 MB with nothing measured behind it. A series is
+        // what turns that into a peak; a single jcmd reading during an audit cannot.
+        healthyConsumer()
+
+        val metrics = readiness().metrics()
+
+        assertTrue(metrics.contains("trading_system_jvm_heap_used_bytes"), metrics)
+        assertTrue(metrics.contains("trading_system_jvm_heap_max_bytes"), metrics)
+        assertTrue(metrics.contains("trading_system_process_uptime_seconds"), metrics)
+    }
+
+    @Test
+    fun `process metrics do not restate a readiness condition`() {
+        // The one-snapshot rule holds because this service renders readiness per scrape. A process
+        // gauge duplicating a readiness one would be a second number free to drift from the first.
+        healthyConsumer()
+
+        val metrics = readiness().metrics()
+        val names = metrics.lines().filter { it.startsWith("# TYPE ") }.map { it.split(' ')[2] }
+
+        assertEquals(names.size, names.distinct().size, "a series is declared twice: $names")
+    }
+
+    @Test
     fun `metrics count divergences rather than labelling by symbol`() {
         healthyConsumer()
         reconciliation = reconciliationOf(listOf(SymbolTotals("SIM", 4, 7), SymbolTotals("AAPL", 2, 2)))
