@@ -2,7 +2,7 @@ pluginManagement {
     repositories {
         gradlePluginPortal()
         mavenCentral()
-        maven { url 'https://jitpack.io' }
+        maven { url = uri('https://jitpack.io') }
     }
     resolutionStrategy {
         eachPlugin {
@@ -17,7 +17,7 @@ pluginManagement {
 // version-catalog repo); application-specific dependencies stay in build.gradle.
 dependencyResolutionManagement {
     repositories {
-        maven { url 'https://jitpack.io' }
+        maven { url = uri('https://jitpack.io') }
     }
     versionCatalogs {
         create('deps') {
