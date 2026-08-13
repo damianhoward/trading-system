@@ -1,0 +1,20 @@
+# Deprecation and removal warnings this build is known to emit, checked by the shared CI's
+# deprecation-baseline action. A warning not listed here fails the build.
+#
+# Fix a warning rather than adding to this file wherever the code is ours. Everything below comes
+# from a dependency, so the only ways out are the dependency moving or us dropping it.
+#
+# JNA, reached through Testcontainers, which uses it to talk to the Docker daemon over a Unix
+# socket. It loads a native library, which is restricted access the JVM will block outright rather
+# than warn about in a future release.
+#
+# These appear on Linux only and therefore only in CI: on Windows, Testcontainers reaches the
+# daemon over a named pipe and never takes the JNA path, so a workstation run cannot reproduce
+# them. Do not conclude from a clean local build that this file is stale.
+#
+# --enable-native-access=ALL-UNNAMED on the test JVM would silence them, and is the wrong fix: it
+# silences every such warning in the build, including ones nothing has looked at yet.
+WARNING: A restricted method in java.lang.System has been called
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: java.lang.System::load has been called by com.sun.jna.Native in an unnamed module
