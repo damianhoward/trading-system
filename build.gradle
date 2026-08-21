@@ -2,7 +2,7 @@
 // the Autonomous DB, reprices them through risk-engine, and serves a live dashboard. Matching
 // and pricing are library dependencies (JitPack tags), not code that lives here.
 plugins {
-    id 'com.damianhoward.kotlin-conventions' version '0.5.0'
+    id 'com.damianhoward.kotlin-conventions' version '0.5.1'
     id 'application'
 }
 
