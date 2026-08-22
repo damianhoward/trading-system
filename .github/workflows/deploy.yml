@@ -18,7 +18,7 @@ jobs:
       url: https://trading.damianhoward.com
       health-port: "8082"
       # Longer than the shared default, and longer than the 30s coherence grace in Readiness:
-      # /readyz is 503 while the positions and limits views disagree, so a deploy must not be
+      # /readyz is 503 while the positions and exposure views disagree, so a deploy must not be
       # able to go green by probing in the seconds before the first coherence halt. This is the
       # gate the 2026-07-19 ORA-12838 incident argued for.
       hold-seconds: 30

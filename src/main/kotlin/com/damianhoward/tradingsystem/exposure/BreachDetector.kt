@@ -1,4 +1,4 @@
-package com.damianhoward.tradingsystem.limits
+package com.damianhoward.tradingsystem.exposure
 
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
 import com.damianhoward.tradingsystem.consume.Fill
@@ -8,28 +8,34 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import kotlin.math.abs
 
-/** What the dashboard reads; [LimitsChecker] is the production implementation. */
-fun interface LimitsView {
-    fun report(): LimitsReport
+/** What the dashboard reads; [BreachDetector] is the production implementation. */
+fun interface ExposureView {
+    fun report(): ExposureReport
 }
 
 /**
- * The limits consumer's whole record policy: an independent view of the fill stream that derives
- * its own net position per symbol — it never reads the position book — and records a
- * [BreachEvent] whenever exposure crosses a [RiskLimits] ceiling in either direction. Checking
- * is in-memory only, so there is no transient failure to retry; a malformed record is counted
- * and skipped, not dead-lettered — the positions consumer owns the DLT, and a second publisher
- * would duplicate every poison record.
+ * **This detects breaches. It does not prevent them.** Every fill it sees has already happened, so
+ * a ceiling crossed here is a fact being reported, not an order being refused — nothing rejects an
+ * order for exceeding a [RiskLimits] ceiling. They are watched, not enforced.
+ *
+ * It still covers two things a pre-trade control could not. Notional is |net quantity| × last
+ * price, so it can breach with no trade at all when the price moves; and an exposure derived
+ * independently is a check on a control rather than a restatement of one.
+ *
+ * That independence is the design: it derives its own net position per symbol and never reads the
+ * position book, so the two can disagree and readiness gates on them agreeing. A malformed record
+ * is counted and skipped, not dead-lettered — the positions consumer owns the DLT, and a second
+ * publisher would duplicate every poison record.
  *
  * Restart safety comes from the fill ledger, not Kafka group offsets: [warm] replays the
  * persisted fills at startup (events carry each fill's own timestamp, so the rebuilt history is
  * the same one), and the consumer then seeks the live stream from the ledger's high-water mark.
  * Thread-safe: the consumer thread writes, web threads read.
  */
-class LimitsChecker(
+class BreachDetector(
     private val limits: RiskLimits,
 ) : RecordHandler,
-    LimitsView {
+    ExposureView {
     private class Exposure(
         var netQuantity: Long = 0,
         var lastPrice: BigDecimal = BigDecimal.ZERO,
@@ -41,6 +47,7 @@ class LimitsChecker(
     private val exposures = HashMap<String, Exposure>()
     private val events = ArrayDeque<BreachEvent>()
     private var malformed = 0L
+    private var breaches = 0L
 
     /** Where this view sits on the stream — the readiness probe compares it with the positions view. */
     @Volatile
@@ -113,26 +120,29 @@ class LimitsChecker(
     ) {
         events.addFirst(BreachEvent(fill.symbol, kind, breached, value, limit, fill.timeMillis))
         while (events.size > MAX_EVENTS) events.removeLast()
+        // Counted as well as recorded: the line above evicts, and a restart empties what is left.
+        if (breached) breaches++
     }
 
-    override fun report(): LimitsReport =
+    override fun report(): ExposureReport =
         synchronized(lock) {
-            LimitsReport(
+            ExposureReport(
                 limits = limits,
-                symbols = exposures.entries.sortedBy { it.key }.map { (symbol, exposure) -> symbolLimits(symbol, exposure) },
+                symbols = exposures.entries.sortedBy { it.key }.map { (symbol, exposure) -> symbolExposure(symbol, exposure) },
                 events = events.toList(),
                 malformed = malformed,
+                breaches = breaches,
                 progress = progress,
             )
         }
 
-    private fun symbolLimits(
+    private fun symbolExposure(
         symbol: String,
         exposure: Exposure,
-    ): SymbolLimits {
+    ): SymbolExposure {
         val absQuantity = BigDecimal(abs(exposure.netQuantity))
         val notional = absQuantity * exposure.lastPrice
-        return SymbolLimits(
+        return SymbolExposure(
             symbol = symbol,
             netQuantity = exposure.netQuantity,
             lastPrice = exposure.lastPrice,

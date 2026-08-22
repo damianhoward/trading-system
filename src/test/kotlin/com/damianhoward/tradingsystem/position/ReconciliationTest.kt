@@ -103,10 +103,10 @@ class ReconciliationTest {
         val result =
             of(
                 ledger(SymbolTotals("SIM", 10, 10), offset = 4),
-                mapOf(View.LIMITS to ViewTotals(4, mapOf("SIM" to 10L))),
+                mapOf(View.EXPOSURE to ViewTotals(4, mapOf("SIM" to 10L))),
             )
 
-        val limits = result.verdict(View.LIMITS)!!
+        val limits = result.verdict(View.EXPOSURE)!!
         assertTrue(limits.agrees)
         assertNull(limits.inconclusive)
     }
@@ -116,10 +116,10 @@ class ReconciliationTest {
         val result =
             of(
                 ledger(SymbolTotals("SIM", 10, 10), offset = 4),
-                mapOf(View.LIMITS to ViewTotals(2, mapOf("SIM" to 6L))),
+                mapOf(View.EXPOSURE to ViewTotals(2, mapOf("SIM" to 6L))),
             )
 
-        val limits = result.verdict(View.LIMITS)!!
+        val limits = result.verdict(View.EXPOSURE)!!
         assertFalse(limits.agrees, "unjudged is not agreement")
         assertTrue(limits.divergences.isEmpty(), "and it is not divergence either")
         assertEquals(Inconclusive(viewOffset = 2, ledgerOffset = 4), limits.inconclusive)
@@ -146,10 +146,10 @@ class ReconciliationTest {
         val result =
             of(
                 ledger(offset = null),
-                mapOf(View.LIMITS to ViewTotals(null, emptyMap())),
+                mapOf(View.EXPOSURE to ViewTotals(null, emptyMap())),
             )
 
-        assertTrue(result.verdict(View.LIMITS)!!.agrees)
+        assertTrue(result.verdict(View.EXPOSURE)!!.agrees)
     }
 
     @Test
@@ -157,21 +157,21 @@ class ReconciliationTest {
         val ledgerOnly =
             of(
                 ledger(SymbolTotals("SIM", 10, 10), offset = 4),
-                mapOf(View.LIMITS to ViewTotals(4, emptyMap())),
+                mapOf(View.EXPOSURE to ViewTotals(4, emptyMap())),
             )
         val viewOnly =
             of(
                 ledger(offset = 4),
-                mapOf(View.LIMITS to ViewTotals(4, mapOf("GHOST" to 3L))),
+                mapOf(View.EXPOSURE to ViewTotals(4, mapOf("GHOST" to 3L))),
             )
 
         assertEquals(
             Divergence("SIM", ledgerQuantity = 10, viewQuantity = 0),
-            ledgerOnly.verdict(View.LIMITS)!!.divergences.single(),
+            ledgerOnly.verdict(View.EXPOSURE)!!.divergences.single(),
         )
         assertEquals(
             Divergence("GHOST", ledgerQuantity = 0, viewQuantity = 3),
-            viewOnly.verdict(View.LIMITS)!!.divergences.single(),
+            viewOnly.verdict(View.EXPOSURE)!!.divergences.single(),
         )
     }
 
@@ -182,14 +182,14 @@ class ReconciliationTest {
                 ledger(SymbolTotals("SIM", 10, 10), offset = 4),
                 mapOf(
                     View.POSITION_BOOK to ViewTotals(4, mapOf("SIM" to 10L)),
-                    View.LIMITS to ViewTotals(4, mapOf("SIM" to 3L)),
+                    View.EXPOSURE to ViewTotals(4, mapOf("SIM" to 3L)),
                 ),
             )
 
         assertFalse(result.agrees)
         assertTrue(result.verdict(View.POSITIONS)!!.agrees)
         assertTrue(result.verdict(View.POSITION_BOOK)!!.agrees)
-        assertEquals(listOf("SIM"), result.verdict(View.LIMITS)!!.divergences.map { it.symbol })
+        assertEquals(listOf("SIM"), result.verdict(View.EXPOSURE)!!.divergences.map { it.symbol })
     }
 
     @Test
@@ -197,7 +197,7 @@ class ReconciliationTest {
         // Renaming one silently splits a series in the collector: the old name stops and a new one
         // starts, with no error anywhere and no way to query across the break.
         assertEquals(
-            listOf("positions", "position_book", "limits"),
+            listOf("positions", "position_book", "exposure"),
             View.entries.map { it.label },
         )
     }

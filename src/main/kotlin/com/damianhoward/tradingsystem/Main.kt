@@ -9,9 +9,9 @@ import com.damianhoward.tradingsystem.consume.DeadLetterPublisher
 import com.damianhoward.tradingsystem.consume.DltReplay
 import com.damianhoward.tradingsystem.consume.FillConsumer
 import com.damianhoward.tradingsystem.consume.RetryingHandler
+import com.damianhoward.tradingsystem.exposure.BreachDetector
+import com.damianhoward.tradingsystem.exposure.RiskLimits
 import com.damianhoward.tradingsystem.health.Readiness
-import com.damianhoward.tradingsystem.limits.LimitsChecker
-import com.damianhoward.tradingsystem.limits.RiskLimits
 import com.damianhoward.tradingsystem.position.JdbcPositionStore
 import com.damianhoward.tradingsystem.position.PositionBook
 import com.damianhoward.tradingsystem.position.ReconciliationChecker
@@ -30,7 +30,7 @@ import kotlin.system.exitProcess
 
 /**
  * Composition root: reads config, migrates the schema, warms both views from the fill ledger,
- * and wires fills → positions → risk → dashboard plus the independent limits view over the same
+ * and wires fills → positions → risk → dashboard plus the independent exposure view over the same
  * topic, with a periodic check that the book still equals the fills behind it. Plumbing only —
  * every collaborator is constructed here and tested elsewhere.
  *
@@ -39,7 +39,7 @@ import kotlin.system.exitProcess
  * `Restart=on-failure` brings the process back into a replay the ledger makes idempotent.
  *
  * `replay-dlt` runs [DltReplay] instead of the service — the operator entry point for feeding
- * recoverable dead letters back through the pipeline (runbook: workspace-config doc 15).
+ * recoverable dead letters back through the pipeline.
  */
 fun main(args: Array<String>) {
     val config = AppConfig.fromEnv(System.getenv())
@@ -69,12 +69,12 @@ fun main(args: Array<String>) {
     val book = PositionBook().apply { restore(store.loadAll()) }
     val broadcaster = SseBroadcaster().apply { startHeartbeat() }
     val risk = RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default())
-    val limits = LimitsChecker(RiskLimits(config.limitMaxPosition, config.limitMaxNotional))
-    limits.warm(ledger.fills, ledgerProgress)
+    val detector = BreachDetector(RiskLimits(config.limitMaxPosition, config.limitMaxNotional))
+    detector.warm(ledger.fills, ledgerProgress)
     val deadLetters = DeadLetterPublisher.create(config.kafkaBootstrapServers, config.deadLetterTopic)
     val opens = SessionOpens().apply { ledger.fills.forEach(::observe) }
-    val capture = TradeCapture(book, store, risk, broadcaster, limits, opens, ledgerProgress, deadLetters::published)
-    limits.onChange { broadcaster.broadcast(capture.snapshot().toJson()) }
+    val capture = TradeCapture(book, store, risk, broadcaster, detector, opens, ledgerProgress, deadLetters::published)
+    detector.onChange { broadcaster.broadcast(capture.snapshot().toJson()) }
 
     val fatal: (Exception) -> Unit = { error ->
         System.err.println("fill consumer failed:")
@@ -90,13 +90,13 @@ fun main(args: Array<String>) {
             clientId = "trading-system-fills",
             onFatal = fatal,
         )
-    val limitsConsumer =
+    val exposureConsumer =
         FillConsumer.create(
             bootstrapServers = config.kafkaBootstrapServers,
             topic = config.fillsTopic,
-            handler = limits,
+            handler = detector,
             startOffsets = ledger.highWaterOffsets,
-            clientId = "trading-system-limits",
+            clientId = "trading-system-exposure",
             onFatal = fatal,
         )
 
@@ -114,8 +114,8 @@ fun main(args: Array<String>) {
                     View.POSITION_BOOK to {
                         ViewTotals(capture.progress?.offset, book.all().associate { it.symbol to it.quantity })
                     },
-                    View.LIMITS to {
-                        val report = limits.report()
+                    View.EXPOSURE to {
+                        val report = detector.report()
                         ViewTotals(report.progress?.offset, report.symbols.associate { it.symbol to it.netQuantity })
                     },
                 ),
@@ -133,12 +133,12 @@ fun main(args: Array<String>) {
 
     val readiness =
         Readiness(
-            consumers = listOf(consumer.health, limitsConsumer.health),
+            consumers = listOf(consumer.health, exposureConsumer.health),
             databaseOk = store::ping,
             deadLettersPublished = deadLetters::published,
             deadLettersFailed = deadLetters::failed,
             positionsView = capture::progress,
-            limitsView = limits::progress,
+            exposureReport = detector::report,
             reconciliation = reconciler::latest,
         )
     val server = DashboardServer(capture, broadcaster, WebAssets.load(), config.port, readiness)
@@ -146,7 +146,7 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(
         Thread {
             consumer.close()
-            limitsConsumer.close()
+            exposureConsumer.close()
             reconciliations.shutdownNow()
             deadLetters.close()
             broadcaster.close()
@@ -156,5 +156,5 @@ fun main(args: Array<String>) {
 
     server.start()
     consumer.start()
-    limitsConsumer.start()
+    exposureConsumer.start()
 }

@@ -2,6 +2,9 @@ package com.damianhoward.tradingsystem.health
 
 import com.damianhoward.tradingsystem.consume.ConsumerHealth
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
+import com.damianhoward.tradingsystem.exposure.ExposureReport
+import com.damianhoward.tradingsystem.exposure.RiskLimits
+import com.damianhoward.tradingsystem.exposure.SymbolExposure
 import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Reconciliation
 import com.damianhoward.tradingsystem.position.SymbolTotals
@@ -34,8 +37,35 @@ class ReadinessTest {
     private val clock = SteppingClock()
     private val consumer = ConsumerHealth("fills", clock)
     private var positionsOffset: Long? = 9L
-    private var limitsOffset: Long? = 9L
+    private var exposureOffset: Long? = 9L
+    private var exposureSymbols: List<SymbolExposure> = emptyList()
+    private var breachCount = 0L
     private var reconciliation: Reconciliation? = agreeingReconciliation()
+
+    private fun exposureReport() =
+        ExposureReport(
+            limits = RiskLimits(50, java.math.BigDecimal("5000")),
+            symbols = exposureSymbols,
+            events = emptyList(),
+            malformed = 0,
+            breaches = breachCount,
+            progress = exposureOffset?.let { ConsumerProgress(it, 1000) },
+        )
+
+    private fun exposure(
+        symbol: String,
+        position: String,
+        notional: String,
+        breached: Boolean = false,
+    ) = SymbolExposure(
+        symbol = symbol,
+        netQuantity = 1,
+        lastPrice = java.math.BigDecimal.ONE,
+        notional = java.math.BigDecimal.ONE,
+        positionUtilisation = java.math.BigDecimal(position),
+        notionalUtilisation = java.math.BigDecimal(notional),
+        breached = breached,
+    )
 
     private fun agreeingReconciliation() = reconciliationOf(listOf(SymbolTotals("SIM", 4, 4)))
 
@@ -57,7 +87,7 @@ class ReadinessTest {
         val quantities = totals.associate { it.symbol to it.ledgerQuantity }
         return mapOf(
             View.POSITION_BOOK to ViewTotals(offset, quantities),
-            View.LIMITS to ViewTotals(offset, quantities),
+            View.EXPOSURE to ViewTotals(offset, quantities),
         )
     }
 
@@ -68,7 +98,7 @@ class ReadinessTest {
             deadLettersPublished = { 3 },
             deadLettersFailed = { 1 },
             positionsView = { positionsOffset?.let { ConsumerProgress(it, 1000) } },
-            limitsView = { limitsOffset?.let { ConsumerProgress(it, 1000) } },
+            exposureReport = { exposureReport() },
             reconciliation = { reconciliation },
             clock = clock,
         )
@@ -98,7 +128,7 @@ class ReadinessTest {
         assertTrue(metrics.contains("trading_system_view_offset{view=\"positions\"} 9"), metrics)
         assertTrue(metrics.contains("trading_system_views_coherent 1"), metrics)
         assertTrue(metrics.contains("""trading_system_ledger_agrees{view="positions"} 1"""), metrics)
-        assertTrue(metrics.contains("""trading_system_ledger_agrees{view="limits"} 1"""), metrics)
+        assertTrue(metrics.contains("""trading_system_ledger_agrees{view="exposure"} 1"""), metrics)
         assertTrue(metrics.contains("""trading_system_ledger_divergent_symbols{view="position_book"} 0"""), metrics)
         assertTrue(metrics.contains("trading_system_dead_letters_published_total 3"), metrics)
         assertTrue(metrics.contains("trading_system_dead_letters_failed_total 1"), metrics)
@@ -145,6 +175,46 @@ class ReadinessTest {
         assertTrue(metrics.contains("""trading_system_ledger_divergent_symbols{view="positions"} 1"""), metrics)
         // One series per symbol that ever diverged would be kept forever by the collector.
         assertFalse(metrics.contains("SIM"), "a symbol must not become a label: $metrics")
+    }
+
+    @Test
+    fun `a breach leaves the process as a count an alert can fire on`() {
+        healthyConsumer()
+        breachCount = 3
+        exposureSymbols = listOf(exposure("SIM", position = "1.2000", notional = "0.4000", breached = true))
+
+        val metrics = readiness().metrics()
+
+        assertTrue(metrics.contains("trading_system_exposure_breaches_total 3"), metrics)
+        assertTrue(metrics.contains("trading_system_exposure_symbols_breached 1"), metrics)
+        assertTrue(metrics.contains("""trading_system_exposure_utilisation_ratio{limit="position"} 1.2000"""), metrics)
+        assertTrue(metrics.contains("""trading_system_exposure_utilisation_ratio{limit="notional"} 0.4000"""), metrics)
+    }
+
+    @Test
+    fun `utilisation is labelled by ceiling, never by symbol`() {
+        healthyConsumer()
+        exposureSymbols =
+            listOf(
+                exposure("SIM", position = "0.9000", notional = "0.1000"),
+                exposure("AAPL", position = "0.2000", notional = "0.8000"),
+            )
+
+        val metrics = readiness().metrics()
+
+        assertTrue(metrics.contains("""trading_system_exposure_utilisation_ratio{limit="position"} 0.9000"""), metrics)
+        assertTrue(metrics.contains("""trading_system_exposure_utilisation_ratio{limit="notional"} 0.8000"""), metrics)
+        assertFalse(metrics.contains("AAPL"), "a symbol must not become a label: $metrics")
+    }
+
+    @Test
+    fun `no exposure yet publishes no utilisation, but still counts breaches`() {
+        healthyConsumer()
+
+        val metrics = readiness().metrics()
+
+        assertFalse(metrics.contains("trading_system_exposure_utilisation_ratio"), metrics)
+        assertTrue(metrics.contains("trading_system_exposure_breaches_total 0"), metrics)
     }
 
     @Test
@@ -223,10 +293,10 @@ class ReadinessTest {
         assertTrue(readiness().probe().json.contains(""""coherent":true"""))
 
         positionsOffset = null
-        limitsOffset = null
+        exposureOffset = null
         val probe = readiness().probe()
         assertTrue(probe.ready, "a fresh install has consumed nothing on either path")
-        assertTrue(probe.json.contains(""""positionsOffset":null,"limitsOffset":null,"coherent":true"""), probe.json)
+        assertTrue(probe.json.contains(""""positionsOffset":null,"exposureOffset":null,"coherent":true"""), probe.json)
     }
 
     @Test
@@ -244,7 +314,7 @@ class ReadinessTest {
         consumer.polled()
         val stuck = probes.probe()
         assertFalse(stuck.ready, "views apart past the grace window mean a projection is stuck")
-        assertTrue(stuck.json.contains(""""positionsOffset":7,"limitsOffset":9"""), stuck.json)
+        assertTrue(stuck.json.contains(""""positionsOffset":7,"exposureOffset":9"""), stuck.json)
         assertTrue(stuck.json.contains(""""incoherentForMillis":31000"""), stuck.json)
     }
 
@@ -277,7 +347,7 @@ class ReadinessTest {
         consumer.polled()
         val probe = probes.probe()
         assertFalse(probe.ready, "one view at the ledger and one at nothing cannot both be right")
-        assertTrue(probe.json.contains(""""positionsOffset":null,"limitsOffset":9,"coherent":false"""), probe.json)
+        assertTrue(probe.json.contains(""""positionsOffset":null,"exposureOffset":9,"coherent":false"""), probe.json)
     }
 
     @Test
@@ -330,13 +400,13 @@ class ReadinessTest {
                 totals,
                 views =
                     mirroring(totals, 9L) +
-                        mapOf(View.LIMITS to ViewTotals(9L, mapOf("SIM" to 4L))),
+                        mapOf(View.EXPOSURE to ViewTotals(9L, mapOf("SIM" to 4L))),
             )
 
         val probe = readiness().probe()
 
         assertFalse(probe.ready, "an independent view holding the wrong exposure is not safe to serve")
-        assertTrue(probe.json.contains(""""limits":{"ok":false"""), probe.json)
+        assertTrue(probe.json.contains(""""exposure":{"ok":false"""), probe.json)
         assertTrue(
             probe.json.contains("""{"symbol":"SIM","ledgerQuantity":10,"viewQuantity":4,"difference":-6}"""),
             probe.json,
@@ -373,7 +443,7 @@ class ReadinessTest {
                 totals,
                 views =
                     mirroring(totals, 9L) +
-                        mapOf(View.LIMITS to ViewTotals(7L, mapOf("SIM" to 4L))),
+                        mapOf(View.EXPOSURE to ViewTotals(7L, mapOf("SIM" to 4L))),
             )
 
         val probe = readiness().probe()
@@ -391,7 +461,7 @@ class ReadinessTest {
         fun behind() =
             reconciliationOf(
                 totals,
-                views = mirroring(totals, 9L) + mapOf(View.LIMITS to ViewTotals(7L, mapOf("SIM" to 10L))),
+                views = mirroring(totals, 9L) + mapOf(View.EXPOSURE to ViewTotals(7L, mapOf("SIM" to 10L))),
             )
         reconciliation = behind()
         assertTrue(readiness().probe().ready)
@@ -416,14 +486,14 @@ class ReadinessTest {
         reconciliation =
             reconciliationOf(
                 totals,
-                views = mirroring(totals, 9L) + mapOf(View.LIMITS to ViewTotals(7L, mapOf("SIM" to 10L))),
+                views = mirroring(totals, 9L) + mapOf(View.EXPOSURE to ViewTotals(7L, mapOf("SIM" to 10L))),
             )
 
         val metrics = readiness().metrics()
 
         // Pinned at 0 it reads as a standing divergence; pinned at 1, as an assertion nothing made.
-        assertFalse(metrics.contains("""trading_system_ledger_agrees{view="limits"}"""), metrics)
-        assertTrue(metrics.contains("""trading_system_ledger_check_inconclusive{view="limits"} 1"""), metrics)
+        assertFalse(metrics.contains("""trading_system_ledger_agrees{view="exposure"}"""), metrics)
+        assertTrue(metrics.contains("""trading_system_ledger_check_inconclusive{view="exposure"} 1"""), metrics)
         assertTrue(metrics.contains("""trading_system_ledger_check_inconclusive{view="positions"} 0"""), metrics)
         assertTrue(metrics.contains("""trading_system_ledger_agrees{view="positions"} 1"""), metrics)
     }

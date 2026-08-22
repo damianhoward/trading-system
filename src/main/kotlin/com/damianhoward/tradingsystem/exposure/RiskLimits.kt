@@ -1,4 +1,4 @@
-package com.damianhoward.tradingsystem.limits
+package com.damianhoward.tradingsystem.exposure
 
 import java.math.BigDecimal
 

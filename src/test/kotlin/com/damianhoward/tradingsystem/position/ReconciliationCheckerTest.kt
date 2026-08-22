@@ -118,7 +118,7 @@ class ReconciliationCheckerTest {
                 inMemoryViews =
                     mapOf(
                         View.POSITION_BOOK to { ViewTotals(4, mapOf("SIM" to 4L)) },
-                        View.LIMITS to { ViewTotals(4, mapOf("SIM" to 4L)) },
+                        View.EXPOSURE to { ViewTotals(4, mapOf("SIM" to 4L)) },
                     ),
                 clock = clock,
             )
@@ -139,13 +139,13 @@ class ReconciliationCheckerTest {
         val checker =
             ReconciliationChecker(
                 ledgerSnapshot = { LedgerSnapshot(ledgerOffset, listOf(SymbolTotals("SIM", 4, 4))) },
-                inMemoryViews = mapOf(View.LIMITS to { ViewTotals(ledgerOffset + 1, mapOf("SIM" to 4L)) }),
+                inMemoryViews = mapOf(View.EXPOSURE to { ViewTotals(ledgerOffset + 1, mapOf("SIM" to 4L)) }),
                 clock = clock,
             )
 
         checker.run()
 
-        val limits = checker.latest()!!.verdict(View.LIMITS)!!
+        val limits = checker.latest()!!.verdict(View.EXPOSURE)!!
         assertEquals(Inconclusive(viewOffset = 5, ledgerOffset = 4), limits.inconclusive)
         assertTrue(limits.divergences.isEmpty())
     }

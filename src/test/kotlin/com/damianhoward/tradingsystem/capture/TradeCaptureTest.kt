@@ -5,8 +5,8 @@ import com.damianhoward.riskengine.report.RiskReportAssembler
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
 import com.damianhoward.tradingsystem.consume.Fill
 import com.damianhoward.tradingsystem.consume.FillSource
-import com.damianhoward.tradingsystem.limits.LimitsReport
-import com.damianhoward.tradingsystem.limits.RiskLimits
+import com.damianhoward.tradingsystem.exposure.ExposureReport
+import com.damianhoward.tradingsystem.exposure.RiskLimits
 import com.damianhoward.tradingsystem.position.Ledger
 import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Position
@@ -101,7 +101,7 @@ class TradeCaptureTest {
             store = store,
             risk = RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default()),
             broadcaster = broadcaster,
-            limitsView = { LimitsReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
+            exposureView = { ExposureReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
         )
 
     private fun fill(
@@ -123,7 +123,7 @@ class TradeCaptureTest {
         val frame = broadcaster.frames.single()
         assertTrue(frame.contains(""""quantity":5"""), frame)
         assertTrue(frame.contains(""""report":{"""), "the broadcast snapshot carries the repriced report")
-        assertTrue(frame.contains(""""limits":{"""), "the broadcast snapshot carries the limits view")
+        assertTrue(frame.contains(""""exposure":{"""), "the broadcast snapshot carries the limits view")
     }
 
     @Test
@@ -158,7 +158,7 @@ class TradeCaptureTest {
                 store = store,
                 risk = RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default()),
                 broadcaster = broadcaster,
-                limitsView = { LimitsReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
+                exposureView = { ExposureReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
                 deadLetters = { 3 },
             )
 
@@ -207,7 +207,7 @@ class TradeCaptureTest {
                 store = store,
                 risk = RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default()),
                 broadcaster = broadcaster,
-                limitsView = { LimitsReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
+                exposureView = { ExposureReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
                 initialProgress = ConsumerProgress(41, 900),
             )
         assertEquals(ConsumerProgress(41, 900), warmed.snapshot().positionsProgress)

@@ -129,19 +129,19 @@ function symbolReport(s) {
   return html;
 }
 
-function renderLimits(limits) {
-  if (limits.symbols.length === 0) {
-    $("limits").innerHTML =
+function renderExposure(exposure) {
+  if (exposure.symbols.length === 0) {
+    $("exposure").innerHTML =
       '<p class="empty">awaiting the first fill&hellip;</p>';
     return;
   }
   const pct = (u) => `${Math.round(u * 100)}%`;
-  const rows = limits.symbols
+  const rows = exposure.symbols
     .map(
       (s) => `<tr>
         <td>${s.symbol}</td>
-        <td>${qty.format(Math.abs(s.netQuantity))} / ${qty.format(limits.maxPosition)}</td>
-        <td>${money.format(s.notional)} / ${money.format(limits.maxNotional)}</td>
+        <td>${qty.format(Math.abs(s.netQuantity))} / ${qty.format(exposure.maxPosition)}</td>
+        <td>${money.format(s.notional)} / ${money.format(exposure.maxNotional)}</td>
         <td>${pct(Math.max(s.positionUtilisation, s.notionalUtilisation))}</td>
         <td>${s.breached ? '<span class="neg">BREACH</span>' : '<span class="pos">OK</span>'}</td>
       </tr>`,
@@ -151,8 +151,8 @@ function renderLimits(limits) {
       <thead><tr><th>Symbol</th><th>Net</th><th>Notional</th><th>Util</th><th>Status</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
-  if (limits.events.length > 0) {
-    const events = limits.events
+  if (exposure.events.length > 0) {
+    const events = exposure.events
       .map(
         (e) => `<tr>
           <td>${new Date(e.ts).toLocaleTimeString()}</td>
@@ -170,10 +170,10 @@ function renderLimits(limits) {
         <tbody>${events}</tbody>
       </table></div>`;
   }
-  if (limits.malformed > 0) {
-    html += `<p class="empty">malformed records skipped: ${qty.format(limits.malformed)}</p>`;
+  if (exposure.malformed > 0) {
+    html += `<p class="empty">malformed records skipped: ${qty.format(exposure.malformed)}</p>`;
   }
-  $("limits").innerHTML = html;
+  $("exposure").innerHTML = html;
 }
 
 function renderSession(snapshot) {
@@ -182,7 +182,7 @@ function renderSession(snapshot) {
   const rows = [
     ["Instruments", String(snapshot.positions.length)],
     ["Positions view", offset(sync.positions)],
-    ["Limits view", offset(sync.limits)],
+    ["Exposure view", offset(sync.exposure)],
     ["Replays dropped", qty.format(sync.duplicatesDropped)],
     ["Dead letters", qty.format(sync.deadLetters)],
   ]
@@ -243,7 +243,7 @@ function render(snapshot) {
   renderStats(snapshot);
   renderPositions(snapshot.positions);
   renderReport(snapshot.book);
-  renderLimits(snapshot.limits);
+  renderExposure(snapshot.exposure);
   renderSession(snapshot);
   renderSync(snapshot.sync);
   renderDeadLetters(snapshot.sync);

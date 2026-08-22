@@ -2,6 +2,8 @@ package com.damianhoward.tradingsystem.health
 
 import com.damianhoward.tradingsystem.consume.ConsumerHealth
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
+import com.damianhoward.tradingsystem.exposure.ExposureReport
+import com.damianhoward.tradingsystem.exposure.LimitKind
 import com.damianhoward.tradingsystem.position.Divergence
 import com.damianhoward.tradingsystem.position.Inconclusive
 import com.damianhoward.tradingsystem.position.Reconciliation
@@ -18,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
  * answers — this proves the system is doing its job, so a server whose projections disagree is
  * not safe to serve, whatever the process state says.
  *
- * View coherence gets a grace window: the positions and limits consumers are independent, so
+ * View coherence gets a grace window: the positions and exposure consumers are independent, so
  * mid-burst they legitimately sit a few records apart for well under a second. Offsets that stay
  * unequal past [coherenceGrace] mean a view is stuck, and the probe goes 503 naming both
  * positions. Past dead-letter failures are reported but do not fail the probe (an unacknowledged
@@ -43,7 +45,9 @@ class Readiness(
     private val deadLettersPublished: () -> Long,
     private val deadLettersFailed: () -> Long,
     private val positionsView: () -> ConsumerProgress?,
-    private val limitsView: () -> ConsumerProgress?,
+    // The whole report, not just its progress: offsets and breach counts read separately could be
+    // sampled a moment apart, which is what the single snapshot exists to rule out.
+    private val exposureReport: () -> ExposureReport?,
     private val reconciliation: () -> Reconciliation?,
     private val maxPollAge: Duration = MAX_POLL_AGE,
     private val coherenceGrace: Duration = COHERENCE_GRACE,
@@ -66,15 +70,16 @@ class Readiness(
     /**
      * One evaluation of everything above, which both `/readyz` and `/metrics` render.
      *
-     * Document 17 requires the two endpoints to derive from the same objects so they cannot
-     * disagree. Taking one snapshot is the strongest form of that: they cannot disagree because
-     * there is only one set of numbers, read at one instant, rendered twice.
+     * `/readyz` and `/metrics` must never disagree about the same condition, and the strongest
+     * way to guarantee that is to leave them nothing to disagree with: one set of numbers, read at
+     * one instant, rendered twice.
      */
     private data class Snapshot(
         val ready: Boolean,
         val consumers: List<ConsumerState>,
         val databaseOk: Boolean,
         val views: ViewsState,
+        val exposure: ExposureReport?,
         val ledger: LedgerState,
         val deadLettersPublished: Long,
         val deadLettersFailed: Long,
@@ -92,7 +97,7 @@ class Readiness(
     private data class ViewsState(
         val ok: Boolean,
         val positionsOffset: Long?,
-        val limitsOffset: Long?,
+        val exposureOffset: Long?,
         val coherent: Boolean,
         val incoherentForMillis: Long?,
     )
@@ -116,13 +121,15 @@ class Readiness(
     private fun snapshot(): Snapshot {
         val consumerStates = consumers.map(::consumerState)
         val database = databaseOk()
-        val views = viewsState()
+        val exposure = exposureReport()
+        val views = viewsState(exposure)
         val ledger = ledgerState()
         return Snapshot(
             ready = database && views.ok && ledger.ok && consumerStates.all { it.ok },
             consumers = consumerStates,
             databaseOk = database,
             views = views,
+            exposure = exposure,
             ledger = ledger,
             deadLettersPublished = deadLettersPublished(),
             deadLettersFailed = deadLettersFailed(),
@@ -202,10 +209,10 @@ class Readiness(
             """"divergences":[$divergences],"inconclusive":$inconclusive}"""
     }
 
-    private fun viewsState(): ViewsState {
+    private fun viewsState(report: ExposureReport?): ViewsState {
         val positions = positionsView()?.offset
-        val limits = limitsView()?.offset
-        val coherent = positions == limits
+        val exposure = report?.progress?.offset
+        val coherent = positions == exposure
         val incoherentFor =
             if (coherent) {
                 incoherentSinceMillis = null
@@ -217,7 +224,7 @@ class Readiness(
         return ViewsState(
             ok = coherent || incoherentFor!! <= coherenceGrace.toMillis(),
             positionsOffset = positions,
-            limitsOffset = limits,
+            exposureOffset = exposure,
             coherent = coherent,
             incoherentForMillis = incoherentFor,
         )
@@ -225,7 +232,7 @@ class Readiness(
 
     private fun viewsJson(state: ViewsState): String =
         """{"ok":${state.ok},"positionsOffset":${state.positionsOffset ?: "null"},""" +
-            """"limitsOffset":${state.limitsOffset ?: "null"},"coherent":${state.coherent},""" +
+            """"exposureOffset":${state.exposureOffset ?: "null"},"coherent":${state.coherent},""" +
             """"incoherentForMillis":${state.incoherentForMillis ?: "null"}}"""
 
     private fun consumerState(health: ConsumerHealth): ConsumerState {
@@ -250,8 +257,9 @@ class Readiness(
      * The same snapshot in Prometheus text format, for trend and post-incident reconstruction.
      *
      * Every series here is a number this process computes, never text it was handed: no exception
-     * message, no file path, no rejected input. That is document 17's rule for an unauthenticated
-     * endpoint, and it costs nothing to keep, because a metric is a number by definition — the
+     * message, no file path, no rejected input. The endpoint is unauthenticated, so anything it
+     * echoes back is published, and it costs nothing to keep to numbers — a metric is a number by
+     * definition and the
      * temptation this rules out is the `_info` series carrying a failure string as a label.
      *
      * Divergences are counted rather than named per symbol. The probe names them because an
@@ -322,7 +330,7 @@ class Readiness(
             "gauge",
             listOfNotNull(
                 now.views.positionsOffset?.let { """{view="positions"}""" to it },
-                now.views.limitsOffset?.let { """{view="limits"}""" to it },
+                now.views.exposureOffset?.let { """{view="exposure"}""" to it },
             ),
         )
         gauge(
@@ -361,6 +369,29 @@ class Readiness(
                 seconds(it),
             )
         }
+        now.exposure?.let { exposure ->
+            emit(
+                "trading_system_exposure_breaches_total",
+                "Ceiling crossings counted since start. Detected after the fill, never refused before it.",
+                "counter",
+                listOf("" to exposure.breaches),
+            )
+            gauge(
+                "trading_system_exposure_symbols_breached",
+                "Symbols whose exposure is currently over either ceiling.",
+                exposure.breachedSymbols,
+            )
+            emit(
+                "trading_system_exposure_utilisation_ratio",
+                "Worst exposure against its ceiling across symbols. Above 1 is a standing breach.",
+                "gauge",
+                listOfNotNull(
+                    exposure.worstUtilisation(LimitKind.POSITION)?.let { """{limit="position"}""" to it.toPlainString() },
+                    exposure.worstUtilisation(LimitKind.NOTIONAL)?.let { """{limit="notional"}""" to it.toPlainString() },
+                ),
+            )
+        }
+
         emit(
             "trading_system_dead_letters_published_total",
             "Records published to the dead-letter topic because they can never apply.",
