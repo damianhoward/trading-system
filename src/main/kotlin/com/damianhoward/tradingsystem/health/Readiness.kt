@@ -45,10 +45,8 @@ class Readiness(
     private val deadLettersPublished: () -> Long,
     private val deadLettersFailed: () -> Long,
     private val positionsView: () -> ConsumerProgress?,
-    // The whole report rather than just its progress. The exposure view is one source of truth
-    // about one consumer, and reading its offset here while its breach counts were read somewhere
-    // else would let the two be sampled a moment apart — exactly the disagreement between /readyz
-    // and /metrics that rendering both from a single snapshot exists to prevent.
+    // The whole report, not just its progress: offsets and breach counts read separately could be
+    // sampled a moment apart, which is what the single snapshot exists to rule out.
     private val exposureReport: () -> ExposureReport?,
     private val reconciliation: () -> Reconciliation?,
     private val maxPollAge: Duration = MAX_POLL_AGE,
@@ -371,9 +369,6 @@ class Readiness(
                 seconds(it),
             )
         }
-        // The point of the detector reaching the outside. A breach lived only in a bounded deque
-        // and on whatever dashboard was open at the time, so the count below is the first trace of
-        // one that survives both eviction and a restart — an alert can fire on the increase.
         now.exposure?.let { exposure ->
             emit(
                 "trading_system_exposure_breaches_total",
@@ -386,8 +381,6 @@ class Readiness(
                 "Symbols whose exposure is currently over either ceiling.",
                 exposure.breachedSymbols,
             )
-            // Worst across symbols rather than one series per symbol: labelling by symbol would let
-            // cardinality grow with what trades instead of with what is configured.
             emit(
                 "trading_system_exposure_utilisation_ratio",
                 "Worst exposure against its ceiling across symbols. Above 1 is a standing breach.",

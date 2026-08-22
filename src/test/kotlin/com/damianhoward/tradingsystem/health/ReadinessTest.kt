@@ -179,9 +179,6 @@ class ReadinessTest {
 
     @Test
     fun `a breach leaves the process as a count an alert can fire on`() {
-        // The whole point of the detector reaching /metrics. The event history is bounded and a
-        // restart empties it, so without this a breach is only ever visible to whoever had the
-        // dashboard open at the time.
         healthyConsumer()
         breachCount = 3
         exposureSymbols = listOf(exposure("SIM", position = "1.2000", notional = "0.4000", breached = true))
@@ -205,8 +202,6 @@ class ReadinessTest {
 
         val metrics = readiness().metrics()
 
-        // The worst of each, not one series per symbol — cardinality must follow configuration
-        // rather than whatever happens to trade.
         assertTrue(metrics.contains("""trading_system_exposure_utilisation_ratio{limit="position"} 0.9000"""), metrics)
         assertTrue(metrics.contains("""trading_system_exposure_utilisation_ratio{limit="notional"} 0.8000"""), metrics)
         assertFalse(metrics.contains("AAPL"), "a symbol must not become a label: $metrics")
@@ -214,8 +209,6 @@ class ReadinessTest {
 
     @Test
     fun `no exposure yet publishes no utilisation, but still counts breaches`() {
-        // Before the first fill there is nothing to be a fraction of. Zero would read as an
-        // assertion that everything is far from its ceiling, which is a claim nothing supports.
         healthyConsumer()
 
         val metrics = readiness().metrics()

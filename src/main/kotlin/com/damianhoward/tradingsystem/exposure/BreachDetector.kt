@@ -15,23 +15,17 @@ fun interface ExposureView {
 
 /**
  * **This detects breaches. It does not prevent them.** Every fill it sees has already happened, so
- * a ceiling crossed here is a fact being reported, not an order being refused — nothing in the
- * estate rejects an order for exceeding a limit, and the order book's only submission control is a
- * per-IP token bucket. Read [RiskLimits] as ceilings that are *watched*, and do not let the word
- * "limit" imply a control that is not there.
+ * a ceiling crossed here is a fact being reported, not an order being refused — nothing rejects an
+ * order for exceeding a [RiskLimits] ceiling. They are watched, not enforced.
  *
- * It still earns its place for two reasons a pre-trade control could not cover. Notional is
- * |net quantity| × last price, so it can breach with **no trade at all** — the price moves and the
- * ceiling arrives on its own, which nothing checking orders would ever see. And deriving exposure
- * independently is what makes it a check on a control rather than a restatement of one: the day
- * something does gate orders, this is the thing that can say whether the gate held.
+ * It still covers two things a pre-trade control could not. Notional is |net quantity| × last
+ * price, so it can breach with no trade at all when the price moves; and an exposure derived
+ * independently is a check on a control rather than a restatement of one.
  *
- * The independence is the design. It derives its own net position per symbol and **never reads the
- * position book**, so the two can disagree and readiness gates on them agreeing. It records a
- * [BreachEvent] whenever exposure crosses a ceiling in either direction. Detection is in-memory
- * only, so there is no transient failure to retry; a malformed record is counted and skipped, not
- * dead-lettered — the positions consumer owns the DLT, and a second publisher would duplicate
- * every poison record.
+ * That independence is the design: it derives its own net position per symbol and never reads the
+ * position book, so the two can disagree and readiness gates on them agreeing. A malformed record
+ * is counted and skipped, not dead-lettered — the positions consumer owns the DLT, and a second
+ * publisher would duplicate every poison record.
  *
  * Restart safety comes from the fill ledger, not Kafka group offsets: [warm] replays the
  * persisted fills at startup (events carry each fill's own timestamp, so the rebuilt history is
@@ -126,11 +120,7 @@ class BreachDetector(
     ) {
         events.addFirst(BreachEvent(fill.symbol, kind, breached, value, limit, fill.timeMillis))
         while (events.size > MAX_EVENTS) events.removeLast()
-        // Counted as well as recorded, because the deque forgets. It holds MAX_EVENTS and drops the
-        // oldest, so a breach that happened is erased by twenty later transitions and a restart
-        // takes the rest — which left the only durable trace of a breach being whoever happened to
-        // have the dashboard open. A monotonic count cannot be evicted, so an alert can fire on the
-        // increase long after the event itself has gone.
+        // Counted as well as recorded: the line above evicts, and a restart empties what is left.
         if (breached) breaches++
     }
 

@@ -29,7 +29,13 @@ data class SymbolExposure(
     val positionUtilisation: BigDecimal,
     val notionalUtilisation: BigDecimal,
     val breached: Boolean,
-)
+) {
+    fun utilisation(kind: LimitKind): BigDecimal =
+        when (kind) {
+            LimitKind.POSITION -> positionUtilisation
+            LimitKind.NOTIONAL -> notionalUtilisation
+        }
+}
 
 /**
  * The detector's whole view at one moment: per-symbol exposures, the bounded breach/clear history
@@ -46,22 +52,16 @@ data class ExposureReport(
     val breaches: Long = 0,
     val progress: ConsumerProgress? = null,
 ) {
-    /** Symbols currently over either ceiling — what an operator wants before any per-symbol detail. */
     val breachedSymbols: Int get() = symbols.count { it.breached }
 
     /**
-     * The worst utilisation across symbols for one ceiling, or null with nothing to measure. Above
-     * 1 means breached.
+     * The worst utilisation across symbols for one ceiling, null with nothing to measure. Above 1
+     * means breached.
      *
-     * Reported as a maximum rather than per symbol on purpose. A series labelled by symbol is
-     * bounded by what trades rather than by what is configured, so its cardinality grows without a
-     * ceiling of its own — the same reason the reconciliation gauges label by view and never by
-     * symbol.
+     * A maximum rather than a series per symbol: labelled by symbol, cardinality would grow with
+     * what trades rather than with what is configured.
      */
-    fun worstUtilisation(kind: LimitKind): BigDecimal? =
-        symbols
-            .map { if (kind == LimitKind.POSITION) it.positionUtilisation else it.notionalUtilisation }
-            .maxOrNull()
+    fun worstUtilisation(kind: LimitKind): BigDecimal? = symbols.map { it.utilisation(kind) }.maxOrNull()
 
     fun toJson(): String =
         """{"maxPosition":${limits.maxAbsPosition},"maxNotional":${limits.maxNotional.toPlainString()},""" +

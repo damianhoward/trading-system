@@ -230,9 +230,6 @@ class BreachDetectorTest {
 
     @Test
     fun `the breach count outlives the events the deque evicts`() {
-        // The reason the count exists. The history is bounded at MAX_EVENTS, so after enough
-        // transitions the oldest breaches are gone from it entirely — and a number an alert can
-        // fire on must not disappear because twenty later things happened.
         val tight = BreachDetector(RiskLimits(maxAbsPosition = 1, maxNotional = BigDecimal("1000000")))
         repeat(11) { cycle ->
             tight.handle(fill(size = 2, ts = (cycle * 2).toLong()))

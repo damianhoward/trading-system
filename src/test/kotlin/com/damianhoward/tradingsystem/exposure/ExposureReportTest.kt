@@ -51,9 +51,6 @@ class ExposureReportTest {
 
     @Test
     fun `the worst utilisation is the maximum across symbols, per ceiling`() {
-        // Reported as one number rather than one series per symbol, so the two ceilings are read
-        // separately: the symbol closest to its position limit need not be the one closest to its
-        // notional limit, and a single combined figure would hide whichever is not the worst.
         val report =
             ExposureReport(
                 limits,
@@ -71,8 +68,6 @@ class ExposureReportTest {
 
     @Test
     fun `nothing to measure publishes no utilisation rather than a zero`() {
-        // Zero would read as "nothing is anywhere near a ceiling", which is an assertion about
-        // exposure. Before the first fill there is no exposure to assert anything about.
         val empty = ExposureReport(limits, emptyList(), emptyList(), 0)
 
         assertNull(empty.worstUtilisation(LimitKind.POSITION))
