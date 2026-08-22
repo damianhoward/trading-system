@@ -6,9 +6,9 @@ import com.damianhoward.tradingsystem.capture.TradeCapture
 import com.damianhoward.tradingsystem.consume.ConsumerHealth
 import com.damianhoward.tradingsystem.consume.Fill
 import com.damianhoward.tradingsystem.consume.FillSource
+import com.damianhoward.tradingsystem.exposure.ExposureReport
+import com.damianhoward.tradingsystem.exposure.RiskLimits
 import com.damianhoward.tradingsystem.health.Readiness
-import com.damianhoward.tradingsystem.limits.LimitsReport
-import com.damianhoward.tradingsystem.limits.RiskLimits
 import com.damianhoward.tradingsystem.position.Ledger
 import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Position
@@ -70,7 +70,7 @@ class DashboardServerTest {
             store = InMemoryStore(),
             risk = RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default()),
             broadcaster = broadcaster,
-            limitsView = { LimitsReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
+            exposureView = { ExposureReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0) },
         )
     private val consumerHealth = ConsumerHealth("test-consumer").apply { started() }
     private val readiness =
@@ -80,7 +80,7 @@ class DashboardServerTest {
             deadLettersPublished = { 0 },
             deadLettersFailed = { 0 },
             positionsView = { capture.progress },
-            limitsView = { null },
+            exposureReport = { null },
             reconciliation = { Reconciliation.of(LedgerSnapshot(null, emptyList()), emptyMap(), System.currentTimeMillis()) },
         )
     private val server = DashboardServer(capture, broadcaster, WebAssets.load(), port = 0, readiness = readiness)
@@ -151,7 +151,7 @@ class DashboardServerTest {
         assertEquals(200, response.statusCode())
         assertEquals("application/json", response.headers().firstValue("Content-Type").get())
         assertTrue(response.body().startsWith("""{"v":2,"positions":["""), response.body())
-        assertTrue(response.body().contains(""""limits":{"""), response.body())
+        assertTrue(response.body().contains(""""exposure":{"""), response.body())
         assertTrue(response.body().contains(""""sync":{"""), response.body())
     }
 

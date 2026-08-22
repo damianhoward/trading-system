@@ -21,7 +21,7 @@ on stdin.
 The caller passes `hold-seconds: 30`, longer than the shared default and longer than the 30
 second coherence grace in `Readiness`. This is the one setting in the file worth understanding.
 
-`/readyz` answers 503 while the positions and limits views disagree. Those views are populated by
+`/readyz` answers 503 while the positions and exposure views disagree. Those views are populated by
 two independent consumer groups, so immediately after a restart they are briefly, legitimately
 out of step — and a deploy that probed during that window would go green by asking the question
 before the service could answer it honestly. Holding past the grace means readiness is measured

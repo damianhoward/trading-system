@@ -22,7 +22,7 @@ orderbook.fills (Kafka) ──┬─► FillConsumer (seek from ledger) ──�
                           │                                                    │
                           │                                     DashboardServer ──► SSE ──► browser
                           │                                                    ▲
-                          └─► FillConsumer (seek from ledger) ──► LimitsChecker
+                          └─► FillConsumer (seek from ledger) ──► BreachDetector
 ```
 
 Matching and pricing are versioned library dependencies, not code in this repo:
@@ -108,16 +108,27 @@ committed transactions, so it can never run ahead of the database. At startup it
 `positions` table, which the ledger keeps consistent by construction. Schema is managed by
 Flyway.
 
-## Limits
+## Exposure
 
-A second `FillConsumer` feeds `LimitsChecker`, an independent exposure view over the same fill
-stream — it never reads the position book — checking two ceilings on every fill: absolute net
+A second `FillConsumer` feeds `BreachDetector`, an independent exposure view over the same fill
+stream — it never reads the position book — watching two ceilings on every fill: absolute net
 position and notional (|net quantity| × last price). Crossing a ceiling in either direction
 records a breach or clear event, stamped with the fill's own timestamp; the dashboard shows
 current utilisation per symbol and the recent event history.
 
-Limits state is restart-safe through the fill ledger, exactly like the positions path: at
-startup the checker replays the persisted fills (rebuilding exposures **and** the breach
+**It detects breaches; it does not prevent them.** Every fill it sees has already happened, so a
+ceiling crossed here is a fact being reported, not an order being refused — nothing in this
+service rejects an order for exceeding a limit. It is still worth running for two reasons a
+pre-trade control would not cover: notional can breach with no trade at all, because the price
+moves and the ceiling arrives on its own; and an exposure derived independently is a check on a
+control rather than a restatement of one.
+
+Because the event history is bounded and a restart empties it, `/metrics` also carries a
+monotonic breach count, the number of symbols currently over a ceiling, and the worst utilisation
+against each ceiling — so a breach is still visible after the events themselves have gone.
+
+Exposure state is restart-safe through the fill ledger, exactly like the positions path: at
+startup the detector replays the persisted fills (rebuilding exposures **and** the breach
 history — events carry each fill's own time), and the consumer attaches to the live stream past
 the ledger's high-water mark. Both views resume from the same durable truth after a restart,
 the dashboard's `sync` block says whether they have read to the same stream position since, and
@@ -155,7 +166,7 @@ Two endpoints report health at different depths:
 
 - `/healthz` — liveness: the web process answers.
 - `/readyz` — readiness: every consumer thread alive, assigned, and recently polling; the
-  database answering; the positions and limits views at the same stream offset (independent
+  database answering; the positions and exposure views at the same stream offset (independent
   consumers may sit apart mid-burst, so divergence gets a 30 s grace window — offsets still
   apart after that mean a projection is stuck); every derived view reconciling against the ledger
   it comes from; dead-letter publish/failure counters. Returns 503 with the failing component
@@ -179,10 +190,10 @@ There are three such views, and they fail differently:
 | --------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `positions`     | the table, moved in the fill's own transaction | a bad restore, a manual correction, a migration, a bad merge                            |
 | `position_book` | the in-memory mirror                           | wrong valuation, Greeks and VaR — the risk report is priced from it, not from the table |
-| `limits`        | the limits consumer's independent exposure map | breach events against exposures nothing else in the service reads                       |
+| `exposure`      | the detector's independent exposure map        | breach events against exposures nothing else in the service reads                       |
 
 The write path maintains `positions` by construction, inserting the fill and moving the position
-in one transaction, which is precisely why it is worth checking. `limits` is the opposite case:
+in one transaction, which is precisely why it is worth checking. `exposure` is the opposite case:
 it never reads the position book, and that independence — the point of running it in its own
 consumer group — is also why nothing else would notice it disagreeing.
 
@@ -229,7 +240,7 @@ Neither consumer takes a group id — both derive their start position from the 
 ```
 
 JDK 25 via Gradle toolchain. The suite includes real-broker tests (fills in, positions out,
-poison to the DLT; the seek-mode limits consumer fanning out over one topic) and real-database
+poison to the DLT; the seek-mode exposure consumer fanning out over one topic) and real-database
 store tests (Oracle Free) covering replay, retry, and mid-transaction failure — all via
 Testcontainers; a local Docker daemon is required for the full `check`. Coverage is gated at 90%
 instruction with only the process entry point excluded.

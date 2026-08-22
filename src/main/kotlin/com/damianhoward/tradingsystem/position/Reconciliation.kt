@@ -44,7 +44,7 @@ data class ViewTotals(
  * lets the metrics label be bounded by configuration rather than by data.
  *
  * [POSITIONS] is the `positions` table; [POSITION_BOOK] is the in-memory mirror the dashboard and
- * the risk report are priced from; [LIMITS] is the limits consumer's independently-derived
+ * the risk report are priced from; [EXPOSURE] is the detector's independently-derived
  * exposure map.
  */
 enum class View(
@@ -52,7 +52,7 @@ enum class View(
 ) {
     POSITIONS("positions"),
     POSITION_BOOK("position_book"),
-    LIMITS("limits"),
+    EXPOSURE("exposure"),
 }
 
 /**
@@ -119,7 +119,7 @@ data class ViewVerdict(
  *  - [View.POSITION_BOOK] is the in-memory mirror. Both the dashboard and the risk report are
  *    built from it rather than from the table, so a mirror that has drifted produces a wrong
  *    valuation, wrong Greeks and wrong VaR with nothing in the service to contradict them.
- *  - [View.LIMITS] never reads the position book by design — that independence is the whole point
+ *  - [View.EXPOSURE] never reads the position book by design — that independence is the whole point
  *    of running it in its own consumer group, and it is also why nothing else in the service
  *    would notice it disagreeing.
  */

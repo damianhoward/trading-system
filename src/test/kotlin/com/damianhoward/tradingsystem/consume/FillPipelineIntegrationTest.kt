@@ -2,10 +2,10 @@ package com.damianhoward.tradingsystem.consume
 
 import com.damianhoward.riskengine.report.RiskReportAssembler
 import com.damianhoward.tradingsystem.capture.TradeCapture
-import com.damianhoward.tradingsystem.limits.LimitKind
-import com.damianhoward.tradingsystem.limits.LimitsChecker
-import com.damianhoward.tradingsystem.limits.LimitsReport
-import com.damianhoward.tradingsystem.limits.RiskLimits
+import com.damianhoward.tradingsystem.exposure.BreachDetector
+import com.damianhoward.tradingsystem.exposure.ExposureReport
+import com.damianhoward.tradingsystem.exposure.LimitKind
+import com.damianhoward.tradingsystem.exposure.RiskLimits
 import com.damianhoward.tradingsystem.position.Ledger
 import com.damianhoward.tradingsystem.position.LedgerSnapshot
 import com.damianhoward.tradingsystem.position.Position
@@ -103,7 +103,7 @@ class FillPipelineIntegrationTest {
         """{"v":1,"symbol":"SIM","price":"101.00000000","size":$size,""" +
             """"makerOrderId":1,"takerOrderId":2,"aggressor":"$aggressor","ts":$ts}"""
 
-    private fun emptyLimits() = LimitsReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0)
+    private fun emptyExposure() = ExposureReport(RiskLimits(50, BigDecimal("5000")), emptyList(), emptyList(), 0)
 
     @Test
     fun `fills off the topic become positions and a poison record is dead-lettered, not fatal`() {
@@ -117,7 +117,7 @@ class FillPipelineIntegrationTest {
                 store,
                 RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default()),
                 SilentBroadcaster(),
-                limitsView = { emptyLimits() },
+                exposureView = { emptyExposure() },
             )
         val deadLetters = DeadLetterPublisher.create(kafka.bootstrapServers, dlt)
         val consumer =
@@ -164,14 +164,14 @@ class FillPipelineIntegrationTest {
         val topic = "orderbook.fills.fanout"
         val store = CollectingStore()
         val book = PositionBook()
-        val limitsChecker = LimitsChecker(RiskLimits(maxAbsPosition = 3, maxNotional = BigDecimal("1000000")))
+        val breachDetector = BreachDetector(RiskLimits(maxAbsPosition = 3, maxNotional = BigDecimal("1000000")))
         val capture =
             TradeCapture(
                 book,
                 store,
                 RiskGateway(RiskReportAssembler.standard(), MarketAssumptions.default()),
                 SilentBroadcaster(),
-                limitsChecker,
+                breachDetector,
             )
         val deadLetters = DeadLetterPublisher.create(kafka.bootstrapServers, "$topic.DLT")
         // Both paths attach the way production does: no group, seeking from the ledger's
@@ -184,13 +184,13 @@ class FillPipelineIntegrationTest {
                 startOffsets = emptyMap(),
                 clientId = "fanout-it-positions",
             )
-        val limitsConsumer =
+        val exposureConsumer =
             FillConsumer.create(
                 bootstrapServers = kafka.bootstrapServers,
                 topic = topic,
-                handler = limitsChecker,
+                handler = breachDetector,
                 startOffsets = emptyMap(),
-                clientId = "fanout-it-limits",
+                clientId = "fanout-it-exposure",
             )
 
         val producerProps =
@@ -204,11 +204,11 @@ class FillPipelineIntegrationTest {
         }
 
         positionsConsumer.start()
-        limitsConsumer.start()
+        exposureConsumer.start()
         try {
             awaitTrue("the positions consumer should book both fills") { book.positionOf("SIM")?.quantity == 5L }
             awaitTrue("the limits consumer should see the same net position") {
-                limitsChecker
+                breachDetector
                     .report()
                     .symbols
                     .singleOrNull()
@@ -217,7 +217,7 @@ class FillPipelineIntegrationTest {
 
             // Same two fills, consumed independently by each path: the limits side crossed its
             // own ceiling on the second fill.
-            val report = limitsChecker.report()
+            val report = breachDetector.report()
             assertTrue(report.symbols.single().breached, "net 5 over a ceiling of 3")
             val event = report.events.single()
             assertEquals(LimitKind.POSITION, event.kind)
@@ -225,7 +225,7 @@ class FillPipelineIntegrationTest {
             assertEquals(2000, event.timeMillis)
         } finally {
             positionsConsumer.close()
-            limitsConsumer.close()
+            exposureConsumer.close()
             deadLetters.close()
         }
     }

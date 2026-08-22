@@ -13,8 +13,8 @@ import java.lang.management.ThreadMXBean
  *
  * The distinction matters against risk-engine and trading-desk, which carry the same class for the
  * opposite reason: neither can render readiness at scrape frequency, so process metrics are all
- * their `/metrics` has. This service renders its whole readiness snapshot per scrape and is
- * document 17's reference for that rule. Nothing below restates a readiness condition; a gauge
+ * their `/metrics` has. This service renders its whole readiness snapshot per scrape, so it
+ * is the one place the rule can be kept in full. Nothing below restates a readiness condition; a gauge
  * that did would create a second number free to drift from the first.
  *
  * Heap against its ceiling is the load-bearing pair. Box 2 runs this beside a Kafka broker on 1 GB,

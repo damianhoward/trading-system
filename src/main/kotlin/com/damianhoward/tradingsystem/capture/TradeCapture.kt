@@ -3,7 +3,7 @@ package com.damianhoward.tradingsystem.capture
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
 import com.damianhoward.tradingsystem.consume.Fill
 import com.damianhoward.tradingsystem.consume.FillSource
-import com.damianhoward.tradingsystem.limits.LimitsView
+import com.damianhoward.tradingsystem.exposure.ExposureView
 import com.damianhoward.tradingsystem.position.PositionBook
 import com.damianhoward.tradingsystem.position.PositionStore
 import com.damianhoward.tradingsystem.position.RecordOutcome
@@ -35,12 +35,12 @@ class TradeCapture(
     private val store: PositionStore,
     private val risk: RiskGateway,
     private val broadcaster: Broadcaster,
-    private val limitsView: LimitsView,
+    private val exposureView: ExposureView,
     private val opens: SessionOpens = SessionOpens(),
     initialProgress: ConsumerProgress? = null,
     private val deadLetters: () -> Long = { 0 },
 ) : FillHandler {
-    /** Where this view sits on the stream — the readiness probe compares it with the limits view. */
+    /** Where this view sits on the stream — the readiness probe compares it with the exposure view. */
     @Volatile
     var progress: ConsumerProgress? = initialProgress
         private set
@@ -74,7 +74,7 @@ class TradeCapture(
         return DashboardSnapshot(
             positions = positions,
             book = risk.bookReport(positions, opens::openFor),
-            limits = limitsView.report(),
+            exposure = exposureView.report(),
             positionsProgress = progress,
             duplicates = duplicates,
             deadLetters = deadLetters(),

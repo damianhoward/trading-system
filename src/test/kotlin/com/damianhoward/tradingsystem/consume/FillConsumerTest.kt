@@ -81,7 +81,7 @@ class FillConsumerTest {
                         handled.add(record.offset())
                         if (record.offset() == 43L) caughtUp.countDown()
                     },
-                health = ConsumerHealth("limits"),
+                health = ConsumerHealth("exposure"),
                 startOffsets = mapOf(0 to 41L),
                 pollTimeout = Duration.ofMillis(10),
             )
@@ -116,7 +116,7 @@ class FillConsumerTest {
                         handled.add(record.offset())
                         first.countDown()
                     },
-                health = ConsumerHealth("limits"),
+                health = ConsumerHealth("exposure"),
                 startOffsets = emptyMap(),
                 pollTimeout = Duration.ofMillis(10),
             )

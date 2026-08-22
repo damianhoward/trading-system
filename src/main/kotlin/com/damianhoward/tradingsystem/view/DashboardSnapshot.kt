@@ -1,14 +1,14 @@
 package com.damianhoward.tradingsystem.view
 
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
-import com.damianhoward.tradingsystem.limits.LimitsReport
+import com.damianhoward.tradingsystem.exposure.ExposureReport
 import com.damianhoward.tradingsystem.position.Position
 import com.damianhoward.tradingsystem.pricing.BookRisk
 
 /**
  * Everything the dashboard renders, at one moment: the booked [positions], the [book] risk —
  * one report per position plus the sums that are honest to sum (null before anything has
- * traded) — the [limits] consumer's exposure view, and where each consumer path sits on the
+ * traded) — the [exposure] view the detector derives, and where each consumer path sits on the
  * stream. The two paths are independent consumers, so the `sync` block states whether they
  * describe the same stream position instead of leaving the reader to assume it, along with the
  * poison records dead-lettered this session ([deadLetters]). [toJson] is the wire contract
@@ -18,19 +18,19 @@ import com.damianhoward.tradingsystem.pricing.BookRisk
 data class DashboardSnapshot(
     val positions: List<Position>,
     val book: BookRisk?,
-    val limits: LimitsReport,
+    val exposure: ExposureReport,
     val positionsProgress: ConsumerProgress? = null,
     val duplicates: Long = 0,
     val deadLetters: Long = 0,
 ) {
     /** True when both paths have read to the same offset (or neither has seen a fill). */
-    val coherent: Boolean get() = positionsProgress?.offset == limits.progress?.offset
+    val coherent: Boolean get() = positionsProgress?.offset == exposure.progress?.offset
 
     fun toJson(): String =
         """{"v":2,"positions":[${positions.joinToString(",", transform = ::positionJson)}],""" +
             """"book":${book?.toJson() ?: "null"},""" +
-            """"limits":${limits.toJson()},""" +
-            """"sync":{"positions":${progressJson(positionsProgress)},"limits":${progressJson(limits.progress)},""" +
+            """"exposure":${exposure.toJson()},""" +
+            """"sync":{"positions":${progressJson(positionsProgress)},"exposure":${progressJson(exposure.progress)},""" +
             """"coherent":$coherent,"duplicatesDropped":$duplicates,"deadLetters":$deadLetters}}"""
 
     private fun progressJson(p: ConsumerProgress?): String =

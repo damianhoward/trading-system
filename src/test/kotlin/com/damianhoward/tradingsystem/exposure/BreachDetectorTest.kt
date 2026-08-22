@@ -1,4 +1,4 @@
-package com.damianhoward.tradingsystem.limits
+package com.damianhoward.tradingsystem.exposure
 
 import com.damianhoward.tradingsystem.consume.ConsumerProgress
 import com.damianhoward.tradingsystem.consume.Fill
@@ -11,9 +11,9 @@ import org.junit.jupiter.api.Test
 import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicInteger
 
-class LimitsCheckerTest {
+class BreachDetectorTest {
     private val limits = RiskLimits(maxAbsPosition = 10, maxNotional = BigDecimal("2000"))
-    private val checker = LimitsChecker(limits)
+    private val detector = BreachDetector(limits)
 
     private fun record(json: String): ConsumerRecord<String, String> = ConsumerRecord("orderbook.fills", 0, 0, "SIM", json)
 
@@ -30,24 +30,24 @@ class LimitsCheckerTest {
 
     @Test
     fun `a fill under both limits reports exposure with no events`() {
-        checker.handle(fill(size = 4))
+        detector.handle(fill(size = 4))
 
-        val symbol = checker.report().symbols.single()
+        val symbol = detector.report().symbols.single()
         assertEquals(4, symbol.netQuantity)
         assertEquals(BigDecimal("101.00000000"), symbol.lastPrice)
         assertEquals(BigDecimal("404.00000000"), symbol.notional)
         assertEquals(BigDecimal("0.4000"), symbol.positionUtilisation)
         assertEquals(BigDecimal("0.2020"), symbol.notionalUtilisation)
         assertFalse(symbol.breached)
-        assertTrue(checker.report().events.isEmpty())
+        assertTrue(detector.report().events.isEmpty())
     }
 
     @Test
     fun `crossing the position limit flags a breach stamped with the fill's own time`() {
-        checker.handle(fill(size = 6))
-        checker.handle(fill(size = 6, ts = 2000))
+        detector.handle(fill(size = 6))
+        detector.handle(fill(size = 6, ts = 2000))
 
-        val report = checker.report()
+        val report = detector.report()
         assertTrue(report.symbols.single().breached)
         val event = report.events.single()
         assertEquals(LimitKind.POSITION, event.kind)
@@ -59,10 +59,10 @@ class LimitsCheckerTest {
 
     @Test
     fun `dropping back under the limit clears the breach with a second event`() {
-        checker.handle(fill(size = 12))
-        checker.handle(fill(size = 5, aggressor = "OFFER", ts = 3000))
+        detector.handle(fill(size = 12))
+        detector.handle(fill(size = 5, aggressor = "OFFER", ts = 3000))
 
-        val report = checker.report()
+        val report = detector.report()
         assertFalse(report.symbols.single().breached)
         assertEquals(listOf(false, true), report.events.map { it.breached }, "newest first: the clear, then the breach")
         assertEquals(3000, report.events.first().timeMillis)
@@ -70,9 +70,9 @@ class LimitsCheckerTest {
 
     @Test
     fun `notional can breach while the position count stays legal`() {
-        checker.handle(fill(size = 5, price = "450.00"))
+        detector.handle(fill(size = 5, price = "450.00"))
 
-        val report = checker.report()
+        val report = detector.report()
         assertTrue(report.symbols.single().breached)
         val event = report.events.single()
         assertEquals(LimitKind.NOTIONAL, event.kind)
@@ -82,9 +82,9 @@ class LimitsCheckerTest {
 
     @Test
     fun `a short position breaches on its absolute size`() {
-        checker.handle(fill(size = 12, aggressor = "OFFER"))
+        detector.handle(fill(size = 12, aggressor = "OFFER"))
 
-        val report = checker.report()
+        val report = detector.report()
         assertEquals(-12, report.symbols.single().netQuantity)
         assertEquals(LimitKind.POSITION, report.events.single().kind)
         assertTrue(report.events.single().breached)
@@ -92,18 +92,18 @@ class LimitsCheckerTest {
 
     @Test
     fun `a further fill while already breached adds no duplicate event`() {
-        checker.handle(fill(size = 12))
-        checker.handle(fill(size = 1, ts = 2000))
+        detector.handle(fill(size = 12))
+        detector.handle(fill(size = 1, ts = 2000))
 
-        assertEquals(1, checker.report().events.size, "an event marks the transition, not every over-limit fill")
+        assertEquals(1, detector.report().events.size, "an event marks the transition, not every over-limit fill")
     }
 
     @Test
     fun `a malformed record is counted and skipped and the stream keeps moving`() {
-        checker.handle(record("""{"not":"a fill"}"""))
-        checker.handle(fill(size = 4))
+        detector.handle(record("""{"not":"a fill"}"""))
+        detector.handle(fill(size = 4))
 
-        val report = checker.report()
+        val report = detector.report()
         assertEquals(1, report.malformed)
         assertEquals(4, report.symbols.single().netQuantity)
         assertTrue(report.events.isEmpty())
@@ -111,14 +111,14 @@ class LimitsCheckerTest {
 
     @Test
     fun `the event history is bounded, keeping the newest`() {
-        val tight = LimitsChecker(RiskLimits(maxAbsPosition = 1, maxNotional = BigDecimal("1000000")))
+        val tight = BreachDetector(RiskLimits(maxAbsPosition = 1, maxNotional = BigDecimal("1000000")))
         repeat(11) { cycle ->
             tight.handle(fill(size = 2, ts = (cycle * 2).toLong()))
             tight.handle(fill(size = 2, aggressor = "OFFER", ts = (cycle * 2 + 1).toLong()))
         }
 
         val events = tight.report().events
-        assertEquals(LimitsChecker.MAX_EVENTS, events.size, "22 transitions happened; only the newest 20 are kept")
+        assertEquals(BreachDetector.MAX_EVENTS, events.size, "22 transitions happened; only the newest 20 are kept")
         assertEquals(21, events.first().timeMillis)
         assertEquals(2, events.last().timeMillis)
     }
@@ -126,26 +126,26 @@ class LimitsCheckerTest {
     @Test
     fun `the change listener fires for applied and malformed records alike`() {
         val changes = AtomicInteger()
-        checker.onChange { changes.incrementAndGet() }
+        detector.onChange { changes.incrementAndGet() }
 
-        checker.handle(fill(size = 1))
-        checker.handle(record("not even json"))
+        detector.handle(fill(size = 1))
+        detector.handle(record("not even json"))
 
         assertEquals(2, changes.get())
     }
 
     @Test
     fun `a report is an immutable copy of the state at that moment`() {
-        checker.handle(fill(size = 4))
-        val before = checker.report()
+        detector.handle(fill(size = 4))
+        val before = detector.report()
 
-        checker.handle(fill(size = 12, ts = 2000))
+        detector.handle(fill(size = 12, ts = 2000))
 
         assertEquals(4, before.symbols.single().netQuantity)
         assertTrue(before.events.isEmpty())
         assertEquals(
             16,
-            checker
+            detector
                 .report()
                 .symbols
                 .single()
@@ -157,10 +157,10 @@ class LimitsCheckerTest {
     fun `reports stay internally consistent while the consumer thread writes`() {
         val writer =
             Thread {
-                repeat(500) { checker.handle(fill(size = 1, ts = it.toLong())) }
+                repeat(500) { detector.handle(fill(size = 1, ts = it.toLong())) }
             }.apply { start() }
         repeat(200) {
-            val symbol = checker.report().symbols.singleOrNull() ?: return@repeat
+            val symbol = detector.report().symbols.singleOrNull() ?: return@repeat
             assertEquals(
                 BigDecimal(symbol.netQuantity).abs() * symbol.lastPrice,
                 symbol.notional,
@@ -170,7 +170,7 @@ class LimitsCheckerTest {
         writer.join(10_000)
         assertEquals(
             500,
-            checker
+            detector
                 .report()
                 .symbols
                 .single()
@@ -180,11 +180,11 @@ class LimitsCheckerTest {
 
     @Test
     fun `warm rebuilds the same state a live replay of those fills would`() {
-        val live = LimitsChecker(limits)
+        val live = BreachDetector(limits)
         live.handle(fill(size = 12, ts = 1000))
         live.handle(fill(size = 5, aggressor = "OFFER", ts = 2000))
 
-        val warmed = LimitsChecker(limits)
+        val warmed = BreachDetector(limits)
         warmed.warm(
             listOf(
                 parsedFill(size = 12, ts = 1000),
@@ -202,8 +202,8 @@ class LimitsCheckerTest {
 
     @Test
     fun `progress tracks the last handled record's offset and fill time`() {
-        assertEquals(null, checker.report().progress, "no progress before the first fill")
-        checker.handle(
+        assertEquals(null, detector.report().progress, "no progress before the first fill")
+        detector.handle(
             ConsumerRecord(
                 "orderbook.fills",
                 0,
@@ -214,7 +214,7 @@ class LimitsCheckerTest {
             ),
         )
 
-        val progress = checker.report().progress
+        val progress = detector.report().progress
         assertEquals(41, progress?.offset)
         assertEquals(7000, progress?.fillTimeMillis)
     }
@@ -227,6 +227,39 @@ class LimitsCheckerTest {
         """{"v":1,"symbol":"SIM","price":"101.00000000","size":$size,""" +
             """"makerOrderId":1,"takerOrderId":2,"aggressor":"$aggressor","ts":$ts}""",
     )
+
+    @Test
+    fun `the breach count outlives the events the deque evicts`() {
+        // The reason the count exists. The history is bounded at MAX_EVENTS, so after enough
+        // transitions the oldest breaches are gone from it entirely — and a number an alert can
+        // fire on must not disappear because twenty later things happened.
+        val tight = BreachDetector(RiskLimits(maxAbsPosition = 1, maxNotional = BigDecimal("1000000")))
+        repeat(11) { cycle ->
+            tight.handle(fill(size = 2, ts = (cycle * 2).toLong()))
+            tight.handle(fill(size = 2, aggressor = "OFFER", ts = (cycle * 2 + 1).toLong()))
+        }
+
+        val report = tight.report()
+        assertEquals(BreachDetector.MAX_EVENTS, report.events.size)
+        assertEquals(11, report.breaches, "eleven crossings happened; the deque only remembers twenty transitions")
+    }
+
+    @Test
+    fun `dropping back under a ceiling is recorded but not counted as a breach`() {
+        detector.handle(fill(size = 6))
+        detector.handle(fill(size = 6, ts = 2000))
+        detector.handle(fill(size = 6, aggressor = "OFFER", ts = 3000))
+
+        val report = detector.report()
+        assertEquals(2, report.events.size, "both transitions are recorded")
+        assertEquals(1, report.breaches, "only the crossing counts; the clear is not a second breach")
+        assertFalse(report.symbols.single().breached)
+    }
+
+    @Test
+    fun `an untouched detector has counted nothing`() {
+        assertEquals(0, detector.report().breaches)
+    }
 
     @Test
     fun `limits must be positive`() {
